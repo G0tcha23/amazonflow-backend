@@ -1,0 +1,18 @@
+{
+  "name": "amazonflow-bot-server",
+  "version": "1.0.0",
+  "description": "Backend con bot de Telegram",
+  "main": "index.js",
+  "engines": {
+    "node": "18.x"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0",
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1"
+  }
+}
