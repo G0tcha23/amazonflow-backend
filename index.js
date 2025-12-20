@@ -70,7 +70,7 @@ bot.on('callback_query', async (query) => {
   switch(data) {
     case 'register':
       userStates[chatId] = { action: 'waiting_paypal', step: 1 };
-      bot.sendMessage(chatId, '📝 REGISTRO DE NUEVO CLIENTE - Paso 1/4\n\nPor favor, envíame tu email de PayPal:');
+      bot.sendMessage(chatId, '📝 REGISTRO - Paso 1/3\n\nEnvíame tu email de PayPal:');
       break;
 
     case 'new_order':
@@ -80,7 +80,7 @@ bot.on('callback_query', async (query) => {
         return;
       }
       userStates[chatId] = { action: 'waiting_order_id' };
-      bot.sendMessage(chatId, '🛍️ NUEVO PEDIDO\n\nPor favor, envíame el Order ID de Amazon.\n\nEjemplo: 111-2233445-6677889');
+      bot.sendMessage(chatId, '🛍️ NUEVO PEDIDO\n\nEnvíame el Order ID de Amazon.\n\nEjemplo: 111-2233445-6677889');
       break;
 
     case 'send_review':
@@ -96,7 +96,7 @@ bot.on('callback_query', async (query) => {
         return;
       }
       userStates[chatId] = { action: 'waiting_review_link' };
-      bot.sendMessage(chatId, '⭐ ENVIAR REVIEW\n\nPor favor, envíame el link de tu review de Amazon.\n\nEjemplo: https://www.amazon.com/review/...');
+      bot.sendMessage(chatId, '⭐ ENVIAR REVIEW\n\nEnvíame el link de tu review de Amazon.\n\nEjemplo: https://www.amazon.com/review/...');
       break;
 
     case 'my_status':
@@ -119,7 +119,7 @@ bot.on('callback_query', async (query) => {
           `👤 Perfil Amazon: ${user.amazonProfile || 'No registrado'}`;
         
         if (user.intermediaries && user.intermediaries.length > 0) {
-          statusMsg += `\n\n🔄 Intermediarios:\n${user.intermediaries.map((i, idx) => `${idx + 1}. @${i}`).join('\n')}`;
+          statusMsg += `\n\n🔄 Intermediarios:\n${user.intermediaries.map((i, idx) => `${idx + 1}. ${i}`).join('\n')}`;
         }
         
         bot.sendMessage(chatId, statusMsg);
@@ -144,68 +144,54 @@ bot.on('message', async (msg) => {
       if (state.step === 1) {
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(text)) {
-          bot.sendMessage(chatId, '❌ Email inválido. Por favor, envía un email válido de PayPal:');
+          bot.sendMessage(chatId, '❌ Email inválido. Intenta de nuevo:');
           return;
         }
         
         if (!db.users[chatId]) {
-          db.users[chatId] = {
-            username,
-            registeredAt: new Date().toISOString()
-          };
+          db.users[chatId] = { username, registeredAt: new Date().toISOString() };
         }
         
         db.users[chatId].paypal = text;
         userStates[chatId] = { action: 'waiting_paypal', step: 2 };
-        bot.sendMessage(chatId, '📝 REGISTRO - Paso 2/4\n\nAhora envíame el enlace de tu perfil de Amazon.\n\nEjemplo: https://www.amazon.com/gp/profile/...');
+        bot.sendMessage(chatId, '📝 REGISTRO - Paso 2/3\n\nEnvíame el enlace de tu perfil de Amazon:');
       } else if (state.step === 2) {
         if (!text.includes('amazon.com') && !text.includes('amzn.')) {
-          bot.sendMessage(chatId, '❌ Enlace inválido. Debe ser un enlace de perfil de Amazon.\n\nIntenta de nuevo:');
+          bot.sendMessage(chatId, '❌ Enlace inválido. Intenta de nuevo:');
           return;
         }
         
         db.users[chatId].amazonProfile = text;
-        userStates[chatId] = { action: 'waiting_paypal', step: 3, intermediaries: [] };
-        bot.sendMessage(chatId, '📝 REGISTRO - Paso 3/4\n\nAhora envíame el @ del primer intermediario con pedidos reembolsados.\n\nEjemplo: username (sin el @)');
-      } else if (state.step === 3 || state.step === 4 || state.step === 5) {
-        const cleanUsername = text.trim();
-        if (cleanUsername.length < 3) {
-          bot.sendMessage(chatId, '❌ Username muy corto. Debe tener al menos 3 caracteres.\n\nIntenta de nuevo:');
+        userStates[chatId] = { action: 'waiting_paypal', step: 3 };
+        bot.sendMessage(chatId, '📝 REGISTRO - Paso 3/3\n\nEnvíame los nicks de tus intermediarios separados por espacios o comas.\n\nEjemplo: user1 user2 user3');
+      } else if (state.step === 3) {
+        const intermediaries = text.split(/[,\s]+/).map(u => u.replace('@', '').trim()).filter(u => u.length >= 3);
+        
+        if (intermediaries.length === 0) {
+          bot.sendMessage(chatId, '❌ Formato inválido. Envía al menos un intermediario válido:');
           return;
         }
         
-        if (!state.intermediaries) state.intermediaries = [];
-        state.intermediaries.push(cleanUsername);
+        db.users[chatId].intermediaries = intermediaries;
+        await saveDB();
         
-        if (state.step === 3) {
-          userStates[chatId].step = 4;
-          bot.sendMessage(chatId, '📝 REGISTRO - Paso 3/4 (2 de 3)\n\nEnvíame el @ del segundo intermediario:');
-        } else if (state.step === 4) {
-          userStates[chatId].step = 5;
-          bot.sendMessage(chatId, '📝 REGISTRO - Paso 3/4 (3 de 3)\n\nEnvíame el @ del tercer intermediario:');
-        } else if (state.step === 5) {
-          db.users[chatId].intermediaries = state.intermediaries;
-          await saveDB();
-          
-          bot.sendMessage(chatId, 
-            `✅ ¡REGISTRO COMPLETADO!\n\n` +
-            `👤 Usuario: @${username}\n` +
-            `💳 PayPal: ${db.users[chatId].paypal}\n` +
-            `🔗 Perfil Amazon: Registrado\n` +
-            `🔄 Intermediarios: ${state.intermediaries.length}\n\n` +
-            `Ya estás registrado en el sistema.\n` +
-            `Ahora puedes hacer pedidos y enviar reviews.`
-          );
-          delete userStates[chatId];
-          showMainMenu(chatId, username);
-        }
+        bot.sendMessage(chatId, 
+          `✅ ¡REGISTRO COMPLETADO!\n\n` +
+          `👤 Usuario: @${username}\n` +
+          `💳 PayPal: ${db.users[chatId].paypal}\n` +
+          `🔗 Perfil Amazon: Registrado\n` +
+          `🔄 Intermediarios: ${intermediaries.length}\n\n` +
+          `Ya puedes hacer pedidos y enviar reviews.`
+        );
+        delete userStates[chatId];
+        showMainMenu(chatId, username);
       }
       break;
 
     case 'waiting_order_id':
       const orderIdRegex = /^\d{3}-\d{7}-\d{7}$/;
       if (!orderIdRegex.test(text)) {
-        bot.sendMessage(chatId, '❌ Order ID inválido.\n\nFormato correcto: 111-2233445-6677889\n\nIntenta de nuevo:');
+        bot.sendMessage(chatId, '❌ Formato incorrecto: 111-2233445-6677889\n\nIntenta de nuevo:');
         return;
       }
 
@@ -219,6 +205,7 @@ bot.on('message', async (msg) => {
         orderId: text,
         timestamp: new Date().toISOString(),
         status: 'pending',
+        orderStatus: 'new',
         amount: 15,
         reviewSubmitted: false
       };
@@ -241,7 +228,7 @@ bot.on('message', async (msg) => {
 
     case 'waiting_review_link':
       if (!text.includes('amazon.com/review') && !text.includes('amzn.to')) {
-        bot.sendMessage(chatId, '❌ Link inválido.\n\nDebe ser un link de review de Amazon.\n\nIntenta de nuevo:');
+        bot.sendMessage(chatId, '❌ Link inválido. Intenta de nuevo:');
         return;
       }
 
@@ -307,11 +294,11 @@ app.get('/api/intermediaries', (req, res) => {
 
 app.put('/api/orders/:id', async (req, res) => {
   const { id } = req.params;
-  const { status } = req.body;
+  const updates = req.body;
   
   const order = db.orders.find(o => o.id === id);
   if (order) {
-    order.status = status;
+    Object.assign(order, updates);
     await saveDB();
     res.json({ success: true, order });
   } else {
