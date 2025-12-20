@@ -116,28 +116,23 @@ bot.on('message', async (msg) => {
         userStates[chatId] = { action: 'waiting_paypal', step: 3 };
         bot.sendMessage(chatId, '📝 Paso 3/3\n\nEnvía los nicks de tus intermediarios (separados por espacios).\n\nEjemplo: user1 user2 user3');
       } else if (state.step === 3) {
-        // Acepta cualquier formato: con @, comas, "y", espacios
         const intermediaries = text
-          .replace(/\sy\s/gi, ' ') // Quita " y "
-          .split(/[,\s]+/) // Divide por comas o espacios
-          .map(u => u.replace('@', '').trim()) // Quita @ y espacios
-          .filter(u => u.length > 0); // Acepta cualquier longitud
-        
-        if (intermediaries.length === 0) {
-          bot.sendMessage(chatId, '❌ Envía al menos un nombre:');
-          return;
-        }
+          .replace(/\sy\s/gi, ' ')
+          .split(/[,\s]+/)
+          .map(u => u.replace('@', '').trim())
+          .filter(u => u.length > 0);
         
         db.users[chatId].intermediaries = intermediaries;
         await saveDB();
         
-        bot.sendMessage(chatId, 
+        await bot.sendMessage(chatId, 
           `✅ ¡Registro completado!\n\n` +
-          `👤 Usuario: @${username}\n` +
-          `💳 PayPal: ${db.users[chatId].paypal}\n` +
-          `🔄 Intermediarios: ${intermediaries.length}\n\n` +
+          `👤 @${username}\n` +
+          `💳 ${db.users[chatId].paypal}\n` +
+          `🔄 ${intermediaries.length} intermediarios\n\n` +
           `Ya puedes hacer pedidos.`
         );
+        
         delete userStates[chatId];
         showMainMenu(chatId, username);
       }
