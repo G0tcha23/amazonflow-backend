@@ -103,12 +103,15 @@ bot.on('message', async (msg) => {
         
         db.users[chatId].paypal = text;
         userStates[chatId] = { action: 'waiting_paypal', step: 2 };
-        bot.sendMessage(chatId, '📝 Paso 2/3\n\nEnvía tu perfil de Amazon:');
+        bot.sendMessage(chatId, 
+          '📝 Paso 2/3\n\n' +
+          'Envía tu perfil de Amazon.\n\n' +
+          '💡 Si no lo tienes, pincha aquí:\n' +
+          'https://www.amazon.es/gp/profile/\n\n' +
+          'Luego copia el enlace y pégalo aquí.'
+        );
       } else if (state.step === 2) {
-        if (!text.includes('amazon.com') && !text.includes('amzn.')) {
-          bot.sendMessage(chatId, '❌ Link inválido.\n\nIntenta de nuevo:');
-          return;
-        }
+        // Acepta cualquier texto como perfil
         
         db.users[chatId].amazonProfile = text;
         userStates[chatId] = { action: 'waiting_paypal', step: 3 };
