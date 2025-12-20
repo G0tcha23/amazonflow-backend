@@ -51,92 +51,41 @@ const mainMenu = {
 };
 
 function showMainMenu(chatId, username) {
-  bot.sendMessage(chatId, `👋 ¡Hola @${username}!\n\n🎯 Bienvenido a AmazonFlow Pro\n\n¿Qué deseas hacer hoy?`, mainMenu);
+  bot.sendMessage(chatId, `👋 ¡Hola @${username}!\n\n¿Qué quieres hacer?`, mainMenu);
 }
 
+// Comando /start con botón
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   const username = msg.from.username || msg.from.first_name;
   showMainMenu(chatId, username);
 });
 
-bot.on('callback_query', async (query) => {
-  const chatId = query.message.chat.id;
-  const username = query.from.username || query.from.first_name;
-  const data = query.data;
-
-  bot.answerCallbackQuery(query.id);
-
-  switch(data) {
-    case 'register':
-      userStates[chatId] = { action: 'waiting_paypal', step: 1 };
-      bot.sendMessage(chatId, '📝 REGISTRO - Paso 1/3\n\nEnvíame tu email de PayPal:');
-      break;
-
-    case 'new_order':
-      if (!db.users[chatId]) {
-        bot.sendMessage(chatId, '⚠️ Primero debes registrarte.\n\nUsa el botón "👤 Registrarme" del menú principal.');
-        showMainMenu(chatId, username);
-        return;
-      }
-      userStates[chatId] = { action: 'waiting_order_id' };
-      bot.sendMessage(chatId, '🛍️ NUEVO PEDIDO\n\nEnvíame el Order ID de Amazon.\n\nEjemplo: 111-2233445-6677889');
-      break;
-
-    case 'send_review':
-      if (!db.users[chatId]) {
-        bot.sendMessage(chatId, '⚠️ Primero debes registrarte.');
-        showMainMenu(chatId, username);
-        return;
-      }
-      const userOrders = db.orders.filter(o => o.chatId === chatId && o.status === 'pending');
-      if (userOrders.length === 0) {
-        bot.sendMessage(chatId, '⚠️ No tienes pedidos pendientes de review.');
-        showMainMenu(chatId, username);
-        return;
-      }
-      userStates[chatId] = { action: 'waiting_review_link' };
-      bot.sendMessage(chatId, '⭐ ENVIAR REVIEW\n\nEnvíame el link de tu review de Amazon.\n\nEjemplo: https://www.amazon.com/review/...');
-      break;
-
-    case 'my_status':
-      const userOrdersList = db.orders.filter(o => o.chatId === chatId);
-      if (userOrdersList.length === 0) {
-        bot.sendMessage(chatId, '📊 TU ESTADO\n\nNo tienes pedidos registrados aún.\n\nUsa el menú para crear tu primer pedido.');
-      } else {
-        const pending = userOrdersList.filter(o => o.status === 'pending').length;
-        const reviewed = userOrdersList.filter(o => o.reviewSubmitted).length;
-        const paid = userOrdersList.filter(o => o.status === 'paid').length;
-        const total = userOrdersList.reduce((sum, o) => sum + o.amount, 0);
-        
-        const user = db.users[chatId];
-        let statusMsg = `📊 TU ESTADO\n\n` +
-          `📦 Total Pedidos: ${userOrdersList.length}\n` +
-          `⏳ Pendientes: ${pending}\n` +
-          `✅ Reviews Enviados: ${reviewed}\n` +
-          `💰 Pagados: ${paid}\n` +
-          `💵 Total Ganado: $${total}\n\n` +
-          `👤 Perfil Amazon: ${user.amazonProfile || 'No registrado'}`;
-        
-        if (user.intermediaries && user.intermediaries.length > 0) {
-          statusMsg += `\n\n🔄 Intermediarios:\n${user.intermediaries.map((i, idx) => `${idx + 1}. ${i}`).join('\n')}`;
-        }
-        
-        bot.sendMessage(chatId, statusMsg);
-      }
-      showMainMenu(chatId, username);
-      break;
-  }
-});
-
+// Mensaje de bienvenida automático cuando alguien abre el bot por primera vez
 bot.on('message', async (msg) => {
-  if (msg.text && msg.text.startsWith('/')) return;
-  
   const chatId = msg.chat.id;
   const username = msg.from.username || msg.from.first_name;
   const text = msg.text;
-  const state = userStates[chatId];
+  
+  // Si es el primer mensaje y no es un comando, mostrar bienvenida
+  if (!text || text.startsWith('/')) return;
+  
+  // Si no hay estado activo y el usuario no está registrado, mostrar bienvenida
+  if (!userStates[chatId] && text !== '/start') {
+    bot.sendMessage(chatId, 
+      '👋 ¡Bienvenido a AmazonFlow!\n\nPresiona el botón de abajo para comenzar:',
+      {
+        reply_markup: {
+          keyboard: [[{ text: '/start' }]],
+          resize_keyboard: true,
+          one_time_keyboard: true
+        }
+      }
+    );
+    return;
+  }
 
+  const state = userStates[chatId];
   if (!state) return;
 
   switch(state.action) {
@@ -144,7 +93,7 @@ bot.on('message', async (msg) => {
       if (state.step === 1) {
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(text)) {
-          bot.sendMessage(chatId, '❌ Email inválido. Intenta de nuevo:');
+          bot.sendMessage(chatId, '❌ Email inválido.\n\nIntenta de nuevo:');
           return;
         }
         
@@ -154,21 +103,21 @@ bot.on('message', async (msg) => {
         
         db.users[chatId].paypal = text;
         userStates[chatId] = { action: 'waiting_paypal', step: 2 };
-        bot.sendMessage(chatId, '📝 REGISTRO - Paso 2/3\n\nEnvíame el enlace de tu perfil de Amazon:');
+        bot.sendMessage(chatId, '📝 Paso 2/3\n\nEnvía tu perfil de Amazon:');
       } else if (state.step === 2) {
         if (!text.includes('amazon.com') && !text.includes('amzn.')) {
-          bot.sendMessage(chatId, '❌ Enlace inválido. Intenta de nuevo:');
+          bot.sendMessage(chatId, '❌ Link inválido.\n\nIntenta de nuevo:');
           return;
         }
         
         db.users[chatId].amazonProfile = text;
         userStates[chatId] = { action: 'waiting_paypal', step: 3 };
-        bot.sendMessage(chatId, '📝 REGISTRO - Paso 3/3\n\nEnvíame los nicks de tus intermediarios separados por espacios o comas.\n\nEjemplo: user1 user2 user3');
+        bot.sendMessage(chatId, '📝 Paso 3/3\n\nEnvía los nicks de tus intermediarios (separados por espacios).\n\nEjemplo: user1 user2 user3');
       } else if (state.step === 3) {
         const intermediaries = text.split(/[,\s]+/).map(u => u.replace('@', '').trim()).filter(u => u.length >= 3);
         
         if (intermediaries.length === 0) {
-          bot.sendMessage(chatId, '❌ Formato inválido. Envía al menos un intermediario válido:');
+          bot.sendMessage(chatId, '❌ Formato inválido.\n\nEnvía al menos un intermediario:');
           return;
         }
         
@@ -176,12 +125,11 @@ bot.on('message', async (msg) => {
         await saveDB();
         
         bot.sendMessage(chatId, 
-          `✅ ¡REGISTRO COMPLETADO!\n\n` +
+          `✅ ¡Registro completado!\n\n` +
           `👤 Usuario: @${username}\n` +
           `💳 PayPal: ${db.users[chatId].paypal}\n` +
-          `🔗 Perfil Amazon: Registrado\n` +
           `🔄 Intermediarios: ${intermediaries.length}\n\n` +
-          `Ya puedes hacer pedidos y enviar reviews.`
+          `Ya puedes hacer pedidos.`
         );
         delete userStates[chatId];
         showMainMenu(chatId, username);
@@ -191,7 +139,11 @@ bot.on('message', async (msg) => {
     case 'waiting_order_id':
       const orderIdRegex = /^\d{3}-\d{7}-\d{7}$/;
       if (!orderIdRegex.test(text)) {
-        bot.sendMessage(chatId, '❌ Formato incorrecto: 111-2233445-6677889\n\nIntenta de nuevo:');
+        bot.sendMessage(chatId, '❌ Formato incorrecto.\n\nEjemplo: 111-2233445-6677889\n\nIntenta de nuevo:', {
+          reply_markup: {
+            inline_keyboard: [[{ text: '❌ Cancelar', callback_data: 'cancel' }]]
+          }
+        });
         return;
       }
 
@@ -206,6 +158,8 @@ bot.on('message', async (msg) => {
         timestamp: new Date().toISOString(),
         status: 'pending',
         orderStatus: 'new',
+        orderDate: new Date().toISOString().split('T')[0],
+        productType: '',
         amount: 15,
         reviewSubmitted: false
       };
@@ -214,13 +168,13 @@ bot.on('message', async (msg) => {
       await saveDB();
       
       bot.sendMessage(chatId,
-        `✅ ¡PEDIDO REGISTRADO!\n\n` +
+        `✅ ¡Pedido registrado!\n\n` +
         `📦 Order ID: ${text}\n` +
-        `💰 Pago al completar: $15\n\n` +
-        `Ahora debes:\n` +
-        `1️⃣ Comprar el producto en Amazon\n` +
-        `2️⃣ Recibir el producto\n` +
-        `3️⃣ Enviar tu review usando el botón "⭐ Enviar Review"`
+        `💰 Pago: $15\n\n` +
+        `Ahora:\n` +
+        `1️⃣ Compra en Amazon\n` +
+        `2️⃣ Recibe el producto\n` +
+        `3️⃣ Envía tu review`
       );
       delete userStates[chatId];
       showMainMenu(chatId, username);
@@ -228,7 +182,11 @@ bot.on('message', async (msg) => {
 
     case 'waiting_review_link':
       if (!text.includes('amazon.com/review') && !text.includes('amzn.to')) {
-        bot.sendMessage(chatId, '❌ Link inválido. Intenta de nuevo:');
+        bot.sendMessage(chatId, '❌ Link inválido.\n\nIntenta de nuevo:', {
+          reply_markup: {
+            inline_keyboard: [[{ text: '❌ Cancelar', callback_data: 'cancel' }]]
+          }
+        });
         return;
       }
 
@@ -240,13 +198,87 @@ bot.on('message', async (msg) => {
         await saveDB();
         
         bot.sendMessage(chatId,
-          `✅ ¡REVIEW RECIBIDO!\n\n` +
-          `Tu review ha sido registrado correctamente.\n\n` +
-          `💰 Procesaremos tu pago de $15 en las próximas 24-48 horas.\n\n` +
-          `Gracias por tu participación.`
+          `✅ ¡Review recibido!\n\n` +
+          `💰 Procesaremos tu pago en 24-48h.\n\n` +
+          `Gracias.`
         );
       }
       delete userStates[chatId];
+      showMainMenu(chatId, username);
+      break;
+  }
+});
+
+bot.on('callback_query', async (query) => {
+  const chatId = query.message.chat.id;
+  const username = query.from.username || query.from.first_name;
+  const data = query.data;
+
+  bot.answerCallbackQuery(query.id);
+
+  if (data === 'cancel') {
+    delete userStates[chatId];
+    bot.sendMessage(chatId, '❌ Operación cancelada.');
+    showMainMenu(chatId, username);
+    return;
+  }
+
+  switch(data) {
+    case 'register':
+      userStates[chatId] = { action: 'waiting_paypal', step: 1 };
+      bot.sendMessage(chatId, '📝 Paso 1/3\n\nEnvía tu email de PayPal:');
+      break;
+
+    case 'new_order':
+      if (!db.users[chatId]) {
+        bot.sendMessage(chatId, '⚠️ Regístrate primero.');
+        showMainMenu(chatId, username);
+        return;
+      }
+      userStates[chatId] = { action: 'waiting_order_id' };
+      bot.sendMessage(chatId, '🛍️ Nuevo Pedido\n\nEnvía el Order ID de Amazon.\n\nEjemplo: 111-2233445-6677889');
+      break;
+
+    case 'send_review':
+      if (!db.users[chatId]) {
+        bot.sendMessage(chatId, '⚠️ Regístrate primero.');
+        showMainMenu(chatId, username);
+        return;
+      }
+      const userOrders = db.orders.filter(o => o.chatId === chatId && o.status === 'pending');
+      if (userOrders.length === 0) {
+        bot.sendMessage(chatId, '⚠️ No tienes pedidos pendientes.');
+        showMainMenu(chatId, username);
+        return;
+      }
+      userStates[chatId] = { action: 'waiting_review_link' };
+      bot.sendMessage(chatId, '⭐ Enviar Review\n\nEnvía el link de tu review.\n\nEjemplo: https://www.amazon.com/review/...');
+      break;
+
+    case 'my_status':
+      const userOrdersList = db.orders.filter(o => o.chatId === chatId);
+      if (userOrdersList.length === 0) {
+        bot.sendMessage(chatId, '📊 Sin pedidos aún.\n\nUsa el menú para crear uno.');
+      } else {
+        const pending = userOrdersList.filter(o => o.status === 'pending').length;
+        const reviewed = userOrdersList.filter(o => o.reviewSubmitted).length;
+        const paid = userOrdersList.filter(o => o.status === 'paid').length;
+        const total = userOrdersList.reduce((sum, o) => sum + o.amount, 0);
+        
+        const user = db.users[chatId];
+        let statusMsg = `📊 Tu Estado\n\n` +
+          `📦 Pedidos: ${userOrdersList.length}\n` +
+          `⏳ Pendientes: ${pending}\n` +
+          `✅ Reviews: ${reviewed}\n` +
+          `💰 Pagados: ${paid}\n` +
+          `💵 Total: $${total}`;
+        
+        if (user.intermediaries && user.intermediaries.length > 0) {
+          statusMsg += `\n\n🔄 Intermediarios:\n${user.intermediaries.map((i, idx) => `${idx + 1}. ${i}`).join('\n')}`;
+        }
+        
+        bot.sendMessage(chatId, statusMsg);
+      }
       showMainMenu(chatId, username);
       break;
   }
@@ -256,11 +288,10 @@ bot.on('message', async (msg) => {
 app.get('/', (req, res) => {
   res.json({ 
     status: 'online',
-    message: 'AmazonFlow Pro Backend',
+    message: 'AmazonFlow Backend',
     endpoints: {
       orders: '/api/orders',
-      users: '/api/users',
-      intermediaries: '/api/intermediaries'
+      users: '/api/users'
     }
   });
 });
@@ -321,6 +352,6 @@ app.delete('/api/orders/:id', async (req, res) => {
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
-  console.log(`🤖 Bot de Telegram activo`);
+  console.log(`🚀 Servidor en http://localhost:${PORT}`);
+  console.log(`🤖 Bot activo`);
 });
