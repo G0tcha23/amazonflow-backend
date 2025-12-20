@@ -138,48 +138,79 @@ bot.on('message', async (msg) => {
       }
       break;
 
-    case 'waiting_order_id':
-      const orderIdRegex = /^\d{3}-\d{7}-\d{7}$/;
-      if (!orderIdRegex.test(text)) {
-        bot.sendMessage(chatId, '❌ Formato incorrecto.\n\nEjemplo: 111-2233445-6677889\n\nIntenta de nuevo:', {
-          reply_markup: {
-            inline_keyboard: [[{ text: '❌ Cancelar', callback_data: 'cancel' }]]
-          }
-        });
-        return;
+    case 'new_order_flow':
+      if (state.step === 1) {
+        const orderIdRegex = /^\d{3}-\d{7}-\d{7}$/;
+        if (!orderIdRegex.test(text)) {
+          bot.sendMessage(chatId, '❌ Formato incorrecto.\n\nEjemplo: 111-2233445-6677889\n\nIntenta de nuevo:', {
+            reply_markup: {
+              inline_keyboard: [[{ text: '❌ Cancelar', callback_data: 'cancel' }]]
+            }
+          });
+          return;
+        }
+        
+        userStates[chatId] = { action: 'new_order_flow', step: 2, orderId: text };
+        bot.sendMessage(chatId, '📸 Paso 2/3\n\nEnvía una captura del pedido donde se vea:\n• Tienda\n• PayPal\n• Importe');
+      } else if (state.step === 2) {
+        if (!msg.photo || msg.photo.length === 0) {
+          bot.sendMessage(chatId, '❌ Debes enviar una foto.\n\nIntenta de nuevo:', {
+            reply_markup: {
+              inline_keyboard: [[{ text: '❌ Cancelar', callback_data: 'cancel' }]]
+            }
+          });
+          return;
+        }
+        
+        const photo = msg.photo[msg.photo.length - 1];
+        userStates[chatId] = { 
+          action: 'new_order_flow', 
+          step: 3, 
+          orderId: state.orderId,
+          photoId: photo.file_id 
+        };
+        bot.sendMessage(chatId, '💳 Paso 3/3\n\nEnvía tu correo de PayPal:');
+      } else if (state.step === 3) {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(text)) {
+          bot.sendMessage(chatId, '❌ Email inválido.\n\nIntenta de nuevo:');
+          return;
+        }
+        
+        const newOrder = {
+          id: Date.now().toString(),
+          chatId,
+          username,
+          paypal: text,
+          amazonProfile: db.users[chatId].amazonProfile,
+          intermediaries: db.users[chatId].intermediaries,
+          orderId: state.orderId,
+          screenshotId: state.photoId,
+          timestamp: new Date().toISOString(),
+          status: 'pending',
+          orderStatus: 'new',
+          orderDate: new Date().toISOString().split('T')[0],
+          productType: '',
+          amount: 15,
+          reviewSubmitted: false
+        };
+        
+        db.orders.push(newOrder);
+        await saveDB();
+        
+        bot.sendMessage(chatId,
+          `✅ ¡Pedido registrado!\n\n` +
+          `📦 Order ID: ${state.orderId}\n` +
+          `💳 PayPal: ${text}\n` +
+          `💰 Pago: $15\n\n` +
+          `Ahora:\n` +
+          `1️⃣ Compra en Amazon\n` +
+          `2️⃣ Recibe el producto\n` +
+          `3️⃣ Envía tu review`
+        );
+        delete userStates[chatId];
+        showMainMenu(chatId, username);
       }
-
-      const newOrder = {
-        id: Date.now().toString(),
-        chatId,
-        username,
-        paypal: db.users[chatId].paypal,
-        amazonProfile: db.users[chatId].amazonProfile,
-        intermediaries: db.users[chatId].intermediaries,
-        orderId: text,
-        timestamp: new Date().toISOString(),
-        status: 'pending',
-        orderStatus: 'new',
-        orderDate: new Date().toISOString().split('T')[0],
-        productType: '',
-        amount: 15,
-        reviewSubmitted: false
-      };
-      
-      db.orders.push(newOrder);
-      await saveDB();
-      
-      bot.sendMessage(chatId,
-        `✅ ¡Pedido registrado!\n\n` +
-        `📦 Order ID: ${text}\n` +
-        `💰 Pago: $15\n\n` +
-        `Ahora:\n` +
-        `1️⃣ Compra en Amazon\n` +
-        `2️⃣ Recibe el producto\n` +
-        `3️⃣ Envía tu review`
-      );
-      delete userStates[chatId];
-      showMainMenu(chatId, username);
       break;
 
     case 'waiting_review_link':
@@ -237,8 +268,8 @@ bot.on('callback_query', async (query) => {
         showMainMenu(chatId, username);
         return;
       }
-      userStates[chatId] = { action: 'waiting_order_id' };
-      bot.sendMessage(chatId, '🛍️ Nuevo Pedido\n\nEnvía el Order ID de Amazon.\n\nEjemplo: 111-2233445-6677889');
+      userStates[chatId] = { action: 'new_order_flow', step: 1 };
+      bot.sendMessage(chatId, '🛍️ Nuevo Pedido - Paso 1/3\n\nEnvía el Order ID de Amazon.\n\nEjemplo: 111-2233445-6677889');
       break;
 
     case 'send_review':
