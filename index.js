@@ -54,38 +54,21 @@ function showMainMenu(chatId, username) {
   bot.sendMessage(chatId, `👋 ¡Hola @${username}!\n\n¿Qué quieres hacer?`, mainMenu);
 }
 
-// Comando /start con botón
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   const username = msg.from.username || msg.from.first_name;
   showMainMenu(chatId, username);
 });
 
-// Mensaje de bienvenida automático cuando alguien abre el bot por primera vez
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const username = msg.from.username || msg.from.first_name;
   const text = msg.text;
   
-  // Si es un comando, no procesar aquí
-  if (!text || text.startsWith('/')) return;
+  if (text && text.startsWith('/')) return;
   
   const state = userStates[chatId];
-  
-  // Solo mostrar bienvenida si NO hay estado activo
-  if (!state) {
-    bot.sendMessage(chatId, 
-      '👋 ¡Bienvenido a AmazonFlow!\n\nPresiona el botón de abajo para comenzar:',
-      {
-        reply_markup: {
-          keyboard: [[{ text: '/start' }]],
-          resize_keyboard: true,
-          one_time_keyboard: true
-        }
-      }
-    );
-    return;
-  }
+  if (!state) return;
 
   switch(state.action) {
     case 'waiting_paypal':
@@ -110,8 +93,6 @@ bot.on('message', async (msg) => {
           'Luego copia el enlace y pégalo aquí.'
         );
       } else if (state.step === 2) {
-        // Acepta cualquier texto como perfil
-        
         db.users[chatId].amazonProfile = text;
         userStates[chatId] = { action: 'waiting_paypal', step: 3 };
         bot.sendMessage(chatId, '📝 Paso 3/3\n\nEnvía los nicks de tus intermediarios (separados por espacios).\n\nEjemplo: user1 user2 user3');
@@ -317,7 +298,6 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-// API REST
 app.get('/', (req, res) => {
   res.json({ 
     status: 'online',
