@@ -67,11 +67,13 @@ bot.on('message', async (msg) => {
   const username = msg.from.username || msg.from.first_name;
   const text = msg.text;
   
-  // Si es el primer mensaje y no es un comando, mostrar bienvenida
+  // Si es un comando, no procesar aquí
   if (!text || text.startsWith('/')) return;
   
-  // Si no hay estado activo y el usuario no está registrado, mostrar bienvenida
-  if (!userStates[chatId] && text !== '/start') {
+  const state = userStates[chatId];
+  
+  // Solo mostrar bienvenida si NO hay estado activo
+  if (!state) {
     bot.sendMessage(chatId, 
       '👋 ¡Bienvenido a AmazonFlow!\n\nPresiona el botón de abajo para comenzar:',
       {
@@ -84,9 +86,6 @@ bot.on('message', async (msg) => {
     );
     return;
   }
-
-  const state = userStates[chatId];
-  if (!state) return;
 
   switch(state.action) {
     case 'waiting_paypal':
