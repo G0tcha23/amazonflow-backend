@@ -111,7 +111,7 @@ bot.on('message', async (msg) => {
           `👤 @${username}\n` +
           `💳 ${db.users[chatId].paypal}\n` +
           `🔄 ${intermediaries.length} intermediarios\n\n` +
-          `Ya puedes hacer pedidos.`
+          `Ya puedes hacer pedidos. ✓✓✓`
         );
         
         delete userStates[chatId];
