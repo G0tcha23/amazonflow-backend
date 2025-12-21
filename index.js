@@ -84,20 +84,61 @@ function isValidAmazonUrl(url) {
   return url.includes('amazon.com') || url.includes('amazon.es');
 }
 
+// Manejo de FOTOS (capturas de pantalla)
+bot.on('photo', async (msg) => {
+  const chatId = msg.chat.id;
+  const state = userStates[chatId];
+
+  if (!state || state.step !== 'awaiting_screenshot') {
+    return; // Ignorar fotos si no estamos esperando una captura
+  }
+
+  try {
+    const photo = msg.photo[msg.photo.length - 1]; // La foto de mayor calidad
+    const fileId = photo.file_id;
+    
+    // Obtener información del archivo para construir la URL
+    const file = await bot.getFile(fileId);
+    const capturaUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+    
+    state.data.capturaUrl = capturaUrl;
+    state.data.fileId = fileId;
+    
+    // Mostrar PayPal guardado y preguntar si quiere cambiarlo
+    const paypalGuardado = state.data.paypalGuardado;
+    
+    state.step = 'awaiting_paypal_confirmacion';
+    
+    await bot.sendMessage(
+      chatId,
+      `✅ Captura recibida\n\n` +
+      `💰 *PayPal guardado:* ${paypalGuardado}\n\n` +
+      `¿Quieres usar este PayPal o cambiarlo?`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '✅ Usar este', callback_data: 'paypal_usar' },
+              { text: '✏️ Cambiar PayPal', callback_data: 'paypal_cambiar' }
+            ]
+          ]
+        }
+      }
+    );
+  } catch (error) {
+    console.error('Error procesando captura:', error);
+    await bot.sendMessage(chatId, '❌ Error procesando la captura. Intenta de nuevo.');
+  }
+});
+
 // Manejo de mensajes
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
   const username = msg.from.username ? '@' + msg.from.username : msg.from.first_name;
 
-  if (!text) {
-    // Si no hay texto, puede ser una foto
-    const state = userStates[chatId];
-    if (state && state.step === 'awaiting_screenshot') {
-      await handleScreenshot(msg, chatId, state);
-    }
-    return;
-  }
+  if (!text) return;
 
   // Comandos principales
   if (text === '❌ Cancelar') {
@@ -321,14 +362,6 @@ bot.on('message', async (msg) => {
         );
         break;
 
-      case 'awaiting_screenshot':
-        // Este caso se maneja en handleScreenshot cuando llega una foto
-        await bot.sendMessage(
-          chatId, 
-          '❌ Por favor envía una imagen (captura de pantalla).'
-        );
-        break;
-
       case 'awaiting_paypal_confirmacion':
         // Este caso se maneja con botones inline (callback_query)
         break;
@@ -394,52 +427,6 @@ bot.on('message', async (msg) => {
     delete userStates[chatId];
   }
 });
-
-// Manejo de fotos (captura de pantalla)
-async function handleScreenshot(msg, chatId, state) {
-  if (!msg.photo) {
-    await bot.sendMessage(chatId, '❌ Por favor envía una imagen.');
-    return;
-  }
-
-  try {
-    const photo = msg.photo[msg.photo.length - 1]; // La foto de mayor calidad
-    const fileId = photo.file_id;
-    
-    // Obtener información del archivo para construir la URL
-    const file = await bot.getFile(fileId);
-    const capturaUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
-    
-    state.data.capturaUrl = capturaUrl;
-    state.data.fileId = fileId;
-    
-    // Mostrar PayPal guardado y preguntar si quiere cambiarlo
-    const paypalGuardado = state.data.paypalGuardado;
-    
-    state.step = 'awaiting_paypal_confirmacion';
-    
-    await bot.sendMessage(
-      chatId,
-      `✅ Captura recibida\n\n` +
-      `💰 *PayPal guardado:* ${paypalGuardado}\n\n` +
-      `¿Quieres usar este PayPal o cambiarlo?`,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: '✅ Usar este', callback_data: 'paypal_usar' },
-              { text: '✏️ Cambiar PayPal', callback_data: 'paypal_cambiar' }
-            ]
-          ]
-        }
-      }
-    );
-  } catch (error) {
-    console.error('Error procesando captura:', error);
-    await bot.sendMessage(chatId, '❌ Error procesando la captura. Intenta de nuevo.');
-  }
-}
 
 // Manejo de botones inline (callback_query)
 bot.on('callback_query', async (query) => {
@@ -597,6 +584,31 @@ app.delete('/api/orders/:orderId', async (req, res) => {
     }
     
     res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint para obtener la imagen de una captura
+app.get('/api/orders/:orderId/image', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    
+    const order = await ordersCollection.findOne({ orderId });
+    
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    
+    if (!order.capturaUrl) {
+      return res.status(404).json({ error: 'No image found for this order' });
+    }
+    
+    res.json({
+      orderId: order.orderId,
+      capturaUrl: order.capturaUrl,
+      fileId: order.fileId
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
