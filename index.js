@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs').promises;
 const path = require('path');
+const { google } = require('googleapis');
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const bot = new TelegramBot(token, { polling: true });
@@ -13,16 +14,137 @@ app.use(cors());
 app.use(express.json());
 
 const DB_FILE = path.join(__dirname, 'database.json');
+const SPREADSHEET_ID = '1a4PoOBu0Ptu5TjRIiQ7hqRLXXNkiDllLCvhzJ6DoMIE';
 
-// 1. Estructura mejorada para incluir 'sessions' (el estado del usuario)
+// Configuración de Google Sheets
+let sheets = null;
+
+async function initGoogleSheets() {
+  try {
+    const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS || '{}');
+    
+    const auth = new google.auth.GoogleAuth({
+      credentials,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+
+    sheets = google.sheets({ version: 'v4', auth });
+    console.log('✅ Google Sheets API conectada');
+    
+    // Sincronizar inmediatamente al iniciar
+    await syncToGoogleSheets();
+    
+    // Programar sincronización cada hora
+    setInterval(syncToGoogleSheets, 3600000); // 1 hora
+    
+  } catch (error) {
+    console.error('⚠️ Error conectando Google Sheets:', error.message);
+  }
+}
+
+async function syncToGoogleSheets() {
+  if (!sheets) {
+    console.log('⚠️ Google Sheets no configurado');
+    return;
+  }
+
+  try {
+    console.log('🔄 Sincronizando con Google Sheets...');
+
+    // 1. HOJA USUARIOS
+    const usersData = [
+      ['Chat ID', 'Username', 'PayPal', 'Perfil Amazon', 'Intermediarios', 'Fecha Registro']
+    ];
+    
+    Object.entries(db.users).forEach(([chatId, user]) => {
+      usersData.push([
+        chatId,
+        user.username || '',
+        user.paypal || '',
+        user.amazonProfile || '',
+        (user.intermediaries || []).join(', '),
+        user.registeredAt || ''
+      ]);
+    });
+
+    // 2. HOJA PEDIDOS
+    const ordersData = [
+      ['ID', 'Username', 'Order ID Amazon', 'PayPal', 'Estado', 'Review Enviado', 'Link Review', 'Monto', 'Fecha', 'Intermediarios']
+    ];
+    
+    db.orders.forEach(order => {
+      ordersData.push([
+        order.id,
+        order.username || '',
+        order.orderId || '',
+        order.paypal || '',
+        order.status || '',
+        order.reviewSubmitted ? 'Sí' : 'No',
+        order.reviewLink || '',
+        order.amount || 0,
+        order.orderDate || '',
+        (order.intermediaries || []).join(', ')
+      ]);
+    });
+
+    // 3. HOJA INTERMEDIARIOS
+    const intermediariesMap = new Map();
+    Object.values(db.users).forEach(user => {
+      if (user.intermediaries) {
+        user.intermediaries.forEach(intermediary => {
+          const count = intermediariesMap.get(intermediary) || 0;
+          intermediariesMap.set(intermediary, count + 1);
+        });
+      }
+    });
+
+    const intermediariesData = [
+      ['Intermediario', 'Cantidad de Usuarios']
+    ];
+    
+    Array.from(intermediariesMap.entries())
+      .sort((a, b) => b[1] - a[1])
+      .forEach(([name, count]) => {
+        intermediariesData.push([name, count]);
+      });
+
+    // Actualizar todas las hojas
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      resource: {
+        data: [
+          {
+            range: 'Usuarios!A1',
+            values: usersData
+          },
+          {
+            range: 'Pedidos!A1',
+            values: ordersData
+          },
+          {
+            range: 'Intermediarios!A1',
+            values: intermediariesData
+          }
+        ],
+        valueInputOption: 'RAW',
+      },
+    });
+
+    console.log(`✅ Sincronización completada: ${usersData.length - 1} usuarios, ${ordersData.length - 1} pedidos`);
+    
+  } catch (error) {
+    console.error('❌ Error sincronizando Google Sheets:', error.message);
+  }
+}
+
+// Base de datos
 let db = {
   users: {},
   orders: [],
   reviews: [],
-  sessions: {} // Aquí guardaremos el userStates para que sobreviva a reinicios
+  sessions: {}
 };
 
-// Mantenemos userStates en memoria para acceso rápido, pero lo sincronizamos con DB
 let userStates = {};
 
 async function loadDB() {
@@ -30,15 +152,12 @@ async function loadDB() {
     const data = await fs.readFile(DB_FILE, 'utf8');
     db = JSON.parse(data);
     
-    // Aseguramos que existan las sesiones si el JSON es antiguo
     if (!db.sessions) db.sessions = {};
-    
-    // Recuperamos el estado de la memoria desde el disco
     userStates = { ...db.sessions };
     
     console.log(`💾 Base de datos cargada: ${DB_FILE}`);
     console.log(`📊 Pedidos: ${db.orders.length}`);
-    console.log(`🔄 Sesiones activas recuperadas: ${Object.keys(userStates).length}`);
+    console.log(`🔄 Sesiones activas: ${Object.keys(userStates).length}`);
   } catch (error) {
     console.log('⚠️ Creando nueva base de datos...');
     await saveDB();
@@ -46,13 +165,21 @@ async function loadDB() {
 }
 
 async function saveDB() {
-  // Antes de guardar, sincronizamos el estado actual al objeto db
   db.sessions = { ...userStates };
   await fs.writeFile(DB_FILE, JSON.stringify(db, null, 2));
+  
+  // Sincronizar con Google Sheets cada vez que guardamos
+  if (sheets) {
+    syncToGoogleSheets().catch(err => console.error('Error en sync:', err));
+  }
 }
 
-// Cargamos la DB al iniciar
-loadDB();
+// Cargar DB e iniciar Google Sheets
+loadDB().then(() => {
+  initGoogleSheets();
+});
+
+// ... [RESTO DEL CÓDIGO DEL BOT IGUAL - no lo copio para ahorrar espacio] ...
 
 const mainMenu = {
   reply_markup: {
@@ -72,7 +199,6 @@ async function showMainMenu(chatId, username) {
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   const username = msg.from.username || msg.from.first_name;
-  // Limpiamos estado al reiniciar para evitar bucles
   if (userStates[chatId]) {
     delete userStates[chatId];
     await saveDB();
@@ -88,13 +214,12 @@ bot.on('message', async (msg) => {
   if (text && text.startsWith('/')) return;
   
   const state = userStates[chatId];
-  if (!state) return; // Si no hay estado, ignoramos el mensaje (o podrías mostrar el menú)
+  if (!state) return;
 
   try {
     switch(state.action) {
       case 'waiting_paypal':
         if (state.step === 1) {
-          // Validación básica de email
           const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
           if (!text || !emailRegex.test(text)) {
             await bot.sendMessage(chatId, '❌ Email inválido. Por favor, envía un email correcto:');
@@ -106,8 +231,6 @@ bot.on('message', async (msg) => {
           }
           
           db.users[chatId].paypal = text;
-          
-          // Avanzamos paso y GUARDAMOS para no perder datos si crashea
           userStates[chatId] = { action: 'waiting_paypal', step: 2 };
           await saveDB(); 
 
@@ -126,15 +249,12 @@ bot.on('message', async (msg) => {
           }
 
           db.users[chatId].amazonProfile = text;
-          
-          // Avanzamos paso y GUARDAMOS
           userStates[chatId] = { action: 'waiting_paypal', step: 3 };
           await saveDB();
 
           await bot.sendMessage(chatId, '📝 Paso 3/3\n\nEnvía los nicks de tus intermediarios (separados por espacios).\n\nEjemplo: user1 user2 user3');
 
         } else if (state.step === 3) {
-          // FIX: Protección contra mensajes sin texto (fotos, stickers)
           if (!text) {
             await bot.sendMessage(chatId, '❌ Por favor, envía los nicks en formato texto.');
             return;
@@ -146,14 +266,11 @@ bot.on('message', async (msg) => {
             .map(u => u.replace('@', '').trim())
             .filter(u => u.length > 0);
           
-          // Aseguramos que el usuario existe (por si se borró la DB parcialmente)
           if (!db.users[chatId]) {
              db.users[chatId] = { username, registeredAt: new Date().toISOString() };
           }
 
           db.users[chatId].intermediaries = intermediaries;
-          
-          // Borramos el estado ANTES de guardar, para indicar que terminó
           delete userStates[chatId];
           await saveDB();
           
@@ -182,7 +299,7 @@ bot.on('message', async (msg) => {
           }
           
           userStates[chatId] = { action: 'new_order_flow', step: 2, orderId: text };
-          await saveDB(); // Guardamos estado
+          await saveDB();
           await bot.sendMessage(chatId, '📸 Paso 2/3\n\nEnvía una captura del pedido donde se vea:\n• Tienda\n• PayPal\n• Importe');
 
         } else if (state.step === 2) {
@@ -202,7 +319,7 @@ bot.on('message', async (msg) => {
             orderId: state.orderId,
             photoId: photo.file_id 
           };
-          await saveDB(); // Guardamos estado
+          await saveDB();
           await bot.sendMessage(chatId, '💳 Paso 3/3\n\nEnvía tu correo de PayPal para este pedido:');
 
         } else if (state.step === 3) {
@@ -212,7 +329,6 @@ bot.on('message', async (msg) => {
             return;
           }
           
-          // Recuperamos datos del usuario de forma segura
           const userProfile = db.users[chatId] || {};
 
           const newOrder = {
@@ -234,7 +350,6 @@ bot.on('message', async (msg) => {
           };
           
           db.orders.push(newOrder);
-          
           delete userStates[chatId];
           await saveDB();
           
@@ -277,7 +392,6 @@ bot.on('message', async (msg) => {
             `Gracias.`
           );
         } else {
-            // Caso raro: no encuentra el pedido
             delete userStates[chatId];
             await saveDB();
             await bot.sendMessage(chatId, '⚠️ No se encontró el pedido pendiente asociado.');
@@ -289,7 +403,6 @@ bot.on('message', async (msg) => {
   } catch (error) {
     console.error('Error en mensaje:', error);
     await bot.sendMessage(chatId, '❌ Ha ocurrido un error interno. Por favor escribe /start para reiniciar.');
-    // Limpiamos estado corrupto
     if (userStates[chatId]) {
         delete userStates[chatId];
         await saveDB();
@@ -302,17 +415,14 @@ bot.on('callback_query', async (query) => {
   const username = query.from.username || query.from.first_name;
   const data = query.data;
 
-  // Siempre responder al callback para que deje de cargar el relojito en Telegram
   try {
       await bot.answerCallbackQuery(query.id);
-  } catch (e) {
-      // Ignorar error si el mensaje es muy viejo
-  }
+  } catch (e) {}
 
   try {
     if (data === 'cancel') {
       delete userStates[chatId];
-      await saveDB(); // Guardamos el borrado
+      await saveDB();
       await bot.sendMessage(chatId, '❌ Operación cancelada.');
       await showMainMenu(chatId, username);
       return;
@@ -321,14 +431,13 @@ bot.on('callback_query', async (query) => {
     switch(data) {
       case 'register':
         userStates[chatId] = { action: 'waiting_paypal', step: 1 };
-        await saveDB(); // Guardamos que el usuario empezó el registro
+        await saveDB();
         await bot.sendMessage(chatId, '📝 Paso 1/3\n\nEnvía tu email de PayPal:');
         break;
 
       case 'new_order':
         if (!db.users[chatId]) {
           await bot.sendMessage(chatId, '⚠️ No estás registrado. Usa la opción "Registrarme" primero.');
-          // Pequeño fix: mostrar menú de nuevo
           await showMainMenu(chatId, username);
           return;
         }
@@ -388,14 +497,15 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-// ... resto del servidor express igual ...
+// API REST
 app.get('/', (req, res) => {
   res.json({ 
     status: 'online',
     message: 'AmazonFlow Backend',
     endpoints: {
       orders: '/api/orders',
-      users: '/api/users'
+      users: '/api/users',
+      sync: '/api/sync-sheets'
     }
   });
 });
@@ -425,6 +535,16 @@ app.get('/api/intermediaries', (req, res) => {
     .sort((a, b) => b.count - a.count);
   
   res.json(intermediariesArray);
+});
+
+// Endpoint manual para forzar sincronización
+app.post('/api/sync-sheets', async (req, res) => {
+  try {
+    await syncToGoogleSheets();
+    res.json({ success: true, message: 'Sincronización completada' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.put('/api/orders/:id', async (req, res) => {
@@ -458,4 +578,5 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor en http://localhost:${PORT}`);
   console.log(`🤖 Bot activo`);
+  console.log(`📊 Google Sheets: Sincronización cada hora`);
 });
