@@ -21,10 +21,7 @@ let ordersCollection;
 
 async function connectDB() {
   try {
-    const client = await MongoClient.connect(mongoUri, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true
-    });
+    const client = await MongoClient.connect(mongoUri);
     
     db = client.db('amazonflow');
     usersCollection = db.collection('users');
