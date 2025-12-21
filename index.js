@@ -489,17 +489,25 @@ async function crearPedido(chatId, data) {
     const newOrder = {
       orderId: `order_${Date.now()}`,
       chatId: data.chatId,
+      username: data.nombreTelegram || 'Unknown', // Para compatibilidad con panel
       nombreTelegram: data.nombreTelegram,
       numeroPedido: data.numeroPedido,
       capturaUrl: data.capturaUrl,
       fileId: data.fileId,
       paypalUsado: data.paypalUsado,
+      paypal: data.paypalUsado, // Para compatibilidad con panel
+      intermediaries: data.intermediarios ? data.intermediarios.split(',').map(i => i.trim()) : [], // Para panel
       intermediarios: data.intermediarios,
+      amazonProfile: data.amazonProfile || '',
       estado: 'pending',
+      orderStatus: 'new', // Para el workflow del panel
       fecha: new Date(),
+      timestamp: new Date().toISOString(), // Para compatibilidad
       amount: 15,
       reviewSubmitted: false,
-      reviewLink: ''
+      reviewLink: '',
+      productType: '',
+      orderDate: new Date().toISOString().split('T')[0]
     };
     
     await ordersCollection.insertOne(newOrder);
@@ -639,6 +647,82 @@ app.get('/api/orders/:orderId/image', async (req, res) => {
   }
 });
 
+// Endpoint para descargar CSV optimizado para Google Sheets
+app.get('/api/export/csv', async (req, res) => {
+  try {
+    const orders = await ordersCollection.find({}).sort({ fecha: -1 }).toArray();
+    
+    // Headers compactos
+    const headers = [
+      'Estado',
+      'Fecha Pedido', 
+      'Tipo',
+      'Usuario',
+      'PayPal',
+      'Order ID',
+      'Amazon',
+      'Fecha Registro',
+      'Monto',
+      'Comisión',
+      'Cobrada',
+      'Captura'
+    ];
+    
+    // Mapear estados a texto corto
+    const estadoMap: { [key: string]: string } = {
+      'new': 'Nuevo',
+      'pending_refund': 'Pend. Reemb.',
+      'pending_commission': 'Pend. Com.',
+      'completed': 'Completado',
+      'pending': 'Pendiente',
+      'reviewed': 'Revisado',
+      'paid': 'Pagado'
+    };
+    
+    // Preparar filas
+    const rows = orders.map(order => [
+      estadoMap[order.orderStatus || order.estado || 'new'] || 'Nuevo',
+      order.orderDate || new Date(order.fecha).toLocaleDateString('es-ES'),
+      order.productType || '',
+      order.nombreTelegram || order.username || '',
+      order.paypalUsado || order.paypal || '',
+      order.numeroPedido || order.orderId || '',
+      order.amazonProfile ? 'Ver' : '',
+      new Date(order.fecha || order.timestamp).toLocaleDateString('es-ES'),
+      order.amount || 15,
+      order.commission || '',
+      order.commissionPaid ? 'Sí' : 'No',
+      order.capturaUrl || ''
+    ]);
+    
+    // Crear CSV
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.map(cell => {
+        // Escapar comas y comillas
+        const str = String(cell);
+        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
+      }).join(','))
+    ].join('\n');
+    
+    // Enviar con BOM para UTF-8 en Excel/Google Sheets
+    const bom = '\uFEFF';
+    const buffer = Buffer.from(bom + csvContent, 'utf-8');
+    
+    const fecha = new Date().toISOString().split('T')[0];
+    res.setHeader('Content-Disposition', `attachment; filename=amazonflow_${fecha}.csv`);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.send(buffer);
+    
+  } catch (error) {
+    console.error('Error generando CSV:', error);
+    res.status(500).json({ error: 'Error generando archivo CSV' });
+  }
+});
+
 // Endpoint para descargar Excel
 app.get('/api/export/excel', async (req, res) => {
   try {
@@ -707,6 +791,7 @@ async function start() {
     console.log('   PUT  /api/orders/:orderId');
     console.log('   DELETE /api/orders/:orderId');
     console.log('   GET  /api/orders/:orderId/image');
+    console.log('   GET  /api/export/csv');
     console.log('   GET  /api/export/excel');
   });
 }
