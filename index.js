@@ -56,11 +56,12 @@ const mainKeyboard = {
 // Comando /start
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
-  const username = msg.from.username || msg.from.first_name;
+  const username = msg.from.username ? '@' + msg.from.username : msg.from.first_name;
   
   await bot.sendMessage(
     chatId,
-    `¡Hola ${username}! 👋\n\nBienvenido al bot de AmazonFlow.\n\n` +
+    `¡Hola ${username}! 👋\n\n` +
+    `Bienvenido al bot de AmazonFlow.\n\n` +
     `Usa los botones para:\n` +
     `👤 Registrarte\n` +
     `🛍️ Crear pedidos\n` +
@@ -87,9 +88,16 @@ function isValidAmazonUrl(url) {
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
-  const username = msg.from.username || msg.from.first_name;
+  const username = msg.from.username ? '@' + msg.from.username : msg.from.first_name;
 
-  if (!text) return;
+  if (!text) {
+    // Si no hay texto, puede ser una foto
+    const state = userStates[chatId];
+    if (state && state.step === 'awaiting_screenshot') {
+      await handleScreenshot(msg, chatId, state);
+    }
+    return;
+  }
 
   // Comandos principales
   if (text === '❌ Cancelar') {
@@ -102,15 +110,34 @@ bot.on('message', async (msg) => {
     const existingUser = await usersCollection.findOne({ chatId });
     
     if (existingUser) {
-      await bot.sendMessage(chatId, '✅ Ya estás registrado', mainKeyboard);
+      await bot.sendMessage(
+        chatId, 
+        `✅ Ya estás registrado\n\n` +
+        `📱 Telegram: ${existingUser.nombreTelegram}\n` +
+        `💰 PayPal: ${existingUser.paypal}\n` +
+        `👥 Intermediarios: ${existingUser.intermediarios}`,
+        mainKeyboard
+      );
       return;
     }
 
-    userStates[chatId] = { step: 'awaiting_paypal', data: { username, chatId } };
+    userStates[chatId] = { 
+      step: 'awaiting_nombre_telegram', 
+      data: { chatId } 
+    };
+    
     await bot.sendMessage(
       chatId,
-      '📧 Por favor, envía tu email de PayPal:',
-      { reply_markup: { keyboard: [['❌ Cancelar']], resize_keyboard: true } }
+      `📝 *REGISTRO DE NUEVO USUARIO*\n\n` +
+      `Por favor, envía tu nombre o nick de Telegram (con @):\n\n` +
+      `Ejemplo: @tunombre`,
+      { 
+        parse_mode: 'Markdown',
+        reply_markup: { 
+          keyboard: [['❌ Cancelar']], 
+          resize_keyboard: true 
+        } 
+      }
     );
     return;
   }
@@ -119,25 +146,37 @@ bot.on('message', async (msg) => {
     const user = await usersCollection.findOne({ chatId });
     
     if (!user) {
-      await bot.sendMessage(chatId, '⚠️ Primero debes registrarte usando "👤 Registrarme"', mainKeyboard);
+      await bot.sendMessage(
+        chatId, 
+        '⚠️ *DEBES REGISTRARTE PRIMERO*\n\n' +
+        'Por favor usa el botón "👤 Registrarme" antes de crear un pedido.',
+        { parse_mode: 'Markdown', ...mainKeyboard }
+      );
       return;
     }
 
     userStates[chatId] = { 
-      step: 'awaiting_order_id', 
+      step: 'awaiting_numero_pedido', 
       data: { 
-        username: user.username,
         chatId,
-        paypal: user.paypal,
-        amazonProfile: user.amazonProfile,
-        intermediaries: user.intermediaries
+        nombreTelegram: user.nombreTelegram,
+        paypalGuardado: user.paypal,
+        intermediarios: user.intermediarios
       } 
     };
     
     await bot.sendMessage(
       chatId,
-      '🆔 Envía el Order ID de Amazon (formato: 111-2233445-6677889):',
-      { reply_markup: { keyboard: [['❌ Cancelar']], resize_keyboard: true } }
+      `📦 *NUEVO PEDIDO*\n\n` +
+      `Envía el número de pedido de Amazon:\n` +
+      `Formato: 111-2233445-6677889`,
+      { 
+        parse_mode: 'Markdown',
+        reply_markup: { 
+          keyboard: [['❌ Cancelar']], 
+          resize_keyboard: true 
+        } 
+      }
     );
     return;
   }
@@ -149,21 +188,31 @@ bot.on('message', async (msg) => {
     }).toArray();
     
     if (orders.length === 0) {
-      await bot.sendMessage(chatId, '⚠️ No tienes pedidos pendientes de review', mainKeyboard);
+      await bot.sendMessage(
+        chatId, 
+        '⚠️ No tienes pedidos pendientes de review', 
+        mainKeyboard
+      );
       return;
     }
 
     userStates[chatId] = { step: 'awaiting_review_link', data: { orders } };
     
-    let ordersList = '📦 Pedidos pendientes de review:\n\n';
+    let ordersList = '📦 *PEDIDOS PENDIENTES DE REVIEW:*\n\n';
     orders.forEach((order, index) => {
-      ordersList += `${index + 1}. Order ID: ${order.orderId}\n`;
+      ordersList += `${index + 1}. Order ID: \`${order.numeroPedido}\`\n`;
     });
     
     await bot.sendMessage(
       chatId,
       ordersList + '\n🔗 Envía el link de tu review de Amazon:',
-      { reply_markup: { keyboard: [['❌ Cancelar']], resize_keyboard: true } }
+      { 
+        parse_mode: 'Markdown',
+        reply_markup: { 
+          keyboard: [['❌ Cancelar']], 
+          resize_keyboard: true 
+        } 
+      }
     );
     return;
   }
@@ -179,14 +228,14 @@ bot.on('message', async (msg) => {
     const stats = {
       total: orders.length,
       pending: orders.filter(o => !o.reviewSubmitted).length,
-      reviewed: orders.filter(o => o.reviewSubmitted && o.status === 'reviewed').length,
-      paid: orders.filter(o => o.status === 'paid').length,
-      totalEarned: orders.filter(o => o.status === 'paid').reduce((sum, o) => sum + (o.amount || 15), 0)
+      reviewed: orders.filter(o => o.reviewSubmitted && o.estado === 'reviewed').length,
+      paid: orders.filter(o => o.estado === 'paid').length,
+      totalEarned: orders.filter(o => o.estado === 'paid').reduce((sum, o) => sum + (o.amount || 15), 0)
     };
 
     await bot.sendMessage(
       chatId,
-      `📊 *Tu Estado*\n\n` +
+      `📊 *TU ESTADO*\n\n` +
       `📦 Total de pedidos: ${stats.total}\n` +
       `⏳ Pendientes de review: ${stats.pending}\n` +
       `✅ Reviews enviados: ${stats.reviewed}\n` +
@@ -203,95 +252,107 @@ bot.on('message', async (msg) => {
 
   try {
     switch (state.step) {
-      case 'awaiting_paypal':
+      // ============= FLUJO DE REGISTRO =============
+      case 'awaiting_nombre_telegram':
+        if (!text.startsWith('@')) {
+          await bot.sendMessage(
+            chatId, 
+            '❌ El nombre debe empezar con @\n\nEjemplo: @tunombre'
+          );
+          return;
+        }
+        state.data.nombreTelegram = text;
+        state.step = 'awaiting_paypal_registro';
+        await bot.sendMessage(
+          chatId, 
+          '💰 Ahora envía tu email de PayPal:'
+        );
+        break;
+
+      case 'awaiting_paypal_registro':
         if (!isValidEmail(text)) {
           await bot.sendMessage(chatId, '❌ Email inválido. Por favor envía un email válido:');
           return;
         }
         state.data.paypal = text;
-        state.step = 'awaiting_amazon_profile';
-        await bot.sendMessage(chatId, '🔗 Envía tu perfil de Amazon (URL):');
+        state.step = 'awaiting_intermediarios';
+        await bot.sendMessage(
+          chatId, 
+          '👥 Envía los nombres de tus intermediarios (para referencias):\n\n' +
+          'Puedes enviar uno o varios separados por comas.\n' +
+          'Ejemplo: Juan, María, Pedro'
+        );
         break;
 
-      case 'awaiting_amazon_profile':
-        if (!isValidAmazonUrl(text)) {
-          await bot.sendMessage(chatId, '❌ URL inválida. Debe ser un link de Amazon:');
-          return;
-        }
-        state.data.amazonProfile = text;
-        state.step = 'awaiting_intermediaries';
-        await bot.sendMessage(chatId, '👥 Envía los nicks de tus intermediarios (separados por espacios):');
-        break;
-
-      case 'awaiting_intermediaries':
-        state.data.intermediaries = text.trim().split(/\s+/);
-        state.data.registeredAt = new Date().toISOString();
+      case 'awaiting_intermediarios':
+        state.data.intermediarios = text.trim();
+        state.data.fechaRegistro = new Date();
         
         await usersCollection.insertOne(state.data);
         
         await bot.sendMessage(
           chatId,
-          '✅ ¡Registro completado con éxito!\n\n' +
-          `📧 PayPal: ${state.data.paypal}\n` +
-          `🔗 Amazon: ${state.data.amazonProfile}\n` +
-          `👥 Intermediarios: ${state.data.intermediaries.join(', ')}`,
-          mainKeyboard
+          `✅ *¡REGISTRO COMPLETADO!*\n\n` +
+          `📱 Telegram: ${state.data.nombreTelegram}\n` +
+          `💰 PayPal: ${state.data.paypal}\n` +
+          `👥 Intermediarios: ${state.data.intermediarios}\n\n` +
+          `Ya puedes crear pedidos usando "🛍️ Nuevo Pedido"`,
+          { parse_mode: 'Markdown', ...mainKeyboard }
         );
         
         delete userStates[chatId];
         break;
 
-      case 'awaiting_order_id':
+      // ============= FLUJO DE PEDIDO =============
+      case 'awaiting_numero_pedido':
         if (!isValidOrderId(text)) {
-          await bot.sendMessage(chatId, '❌ Order ID inválido. Formato correcto: 111-2233445-6677889');
+          await bot.sendMessage(
+            chatId, 
+            '❌ Número de pedido inválido.\n\n' +
+            'Formato correcto: 111-2233445-6677889'
+          );
           return;
         }
-        state.data.orderId = text;
+        state.data.numeroPedido = text;
         state.step = 'awaiting_screenshot';
-        await bot.sendMessage(chatId, '📸 Envía una captura de pantalla del pedido:');
+        await bot.sendMessage(
+          chatId, 
+          '📸 Ahora envía una captura de pantalla del pedido:'
+        );
         break;
 
       case 'awaiting_screenshot':
-        if (!msg.photo) {
-          await bot.sendMessage(chatId, '❌ Por favor envía una imagen');
+        // Este caso se maneja en handleScreenshot cuando llega una foto
+        await bot.sendMessage(
+          chatId, 
+          '❌ Por favor envía una imagen (captura de pantalla).'
+        );
+        break;
+
+      case 'awaiting_paypal_confirmacion':
+        // Este caso se maneja con botones inline (callback_query)
+        break;
+
+      case 'awaiting_nuevo_paypal':
+        if (!isValidEmail(text)) {
+          await bot.sendMessage(chatId, '❌ Email inválido. Por favor envía un email válido:');
           return;
         }
         
-        state.data.screenshotId = msg.photo[msg.photo.length - 1].file_id;
-        
-        const newOrder = {
-          id: `order_${Date.now()}`,
-          chatId: state.data.chatId,
-          username: state.data.username,
-          paypal: state.data.paypal,
-          amazonProfile: state.data.amazonProfile,
-          intermediaries: state.data.intermediaries,
-          orderId: state.data.orderId,
-          screenshotId: state.data.screenshotId,
-          timestamp: new Date().toISOString(),
-          status: 'pending',
-          orderStatus: 'new',
-          orderDate: new Date().toISOString().split('T')[0],
-          productType: '',
-          amount: 15,
-          reviewSubmitted: false,
-          reviewLink: ''
-        };
-        
-        await ordersCollection.insertOne(newOrder);
-        
-        await bot.sendMessage(
-          chatId,
-          '✅ ¡Pedido creado con éxito!\n\n' +
-          `🆔 Order ID: ${newOrder.orderId}\n` +
-          `💰 Monto: $${newOrder.amount}\n\n` +
-          `Recuerda enviar tu review cuando esté listo usando "📝 Enviar Review"`,
-          mainKeyboard
+        // Actualizar PayPal en el perfil del usuario
+        await usersCollection.updateOne(
+          { chatId },
+          { $set: { paypal: text } }
         );
         
+        state.data.paypalUsado = text;
+        
+        // Crear el pedido
+        await crearPedido(chatId, state.data);
         delete userStates[chatId];
         break;
 
+      // ============= FLUJO DE REVIEW =============
       case 'awaiting_review_link':
         if (!isValidAmazonUrl(text)) {
           await bot.sendMessage(chatId, '❌ Link inválido. Debe ser un link de Amazon:');
@@ -301,22 +362,23 @@ bot.on('message', async (msg) => {
         const orderToUpdate = state.data.orders[0];
         
         await ordersCollection.updateOne(
-          { id: orderToUpdate.id },
+          { orderId: orderToUpdate.orderId },
           { 
             $set: { 
               reviewSubmitted: true,
               reviewLink: text,
-              status: 'reviewed'
+              estado: 'reviewed'
             } 
           }
         );
         
         await bot.sendMessage(
           chatId,
-          '✅ ¡Review enviado con éxito!\n\n' +
-          `Tu pedido está ahora en estado "reviewed".\n` +
+          `✅ *¡REVIEW ENVIADO!*\n\n` +
+          `Order ID: \`${orderToUpdate.numeroPedido}\`\n` +
+          `Estado: reviewed\n\n` +
           `Recibirás el pago pronto.`,
-          mainKeyboard
+          { parse_mode: 'Markdown', ...mainKeyboard }
         );
         
         delete userStates[chatId];
@@ -324,23 +386,165 @@ bot.on('message', async (msg) => {
     }
   } catch (error) {
     console.error('Error procesando mensaje:', error);
-    await bot.sendMessage(chatId, '❌ Error procesando tu solicitud. Intenta de nuevo.', mainKeyboard);
+    await bot.sendMessage(
+      chatId, 
+      '❌ Error procesando tu solicitud. Intenta de nuevo.', 
+      mainKeyboard
+    );
     delete userStates[chatId];
   }
 });
 
-// API Routes
-app.get('/', (req, res) => {
-  res.json({ status: 'ok', message: 'AmazonFlow Bot Server' });
+// Manejo de fotos (captura de pantalla)
+async function handleScreenshot(msg, chatId, state) {
+  if (!msg.photo) {
+    await bot.sendMessage(chatId, '❌ Por favor envía una imagen.');
+    return;
+  }
+
+  try {
+    const photo = msg.photo[msg.photo.length - 1]; // La foto de mayor calidad
+    const fileId = photo.file_id;
+    
+    // Obtener información del archivo para construir la URL
+    const file = await bot.getFile(fileId);
+    const capturaUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+    
+    state.data.capturaUrl = capturaUrl;
+    state.data.fileId = fileId;
+    
+    // Mostrar PayPal guardado y preguntar si quiere cambiarlo
+    const paypalGuardado = state.data.paypalGuardado;
+    
+    state.step = 'awaiting_paypal_confirmacion';
+    
+    await bot.sendMessage(
+      chatId,
+      `✅ Captura recibida\n\n` +
+      `💰 *PayPal guardado:* ${paypalGuardado}\n\n` +
+      `¿Quieres usar este PayPal o cambiarlo?`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '✅ Usar este', callback_data: 'paypal_usar' },
+              { text: '✏️ Cambiar PayPal', callback_data: 'paypal_cambiar' }
+            ]
+          ]
+        }
+      }
+    );
+  } catch (error) {
+    console.error('Error procesando captura:', error);
+    await bot.sendMessage(chatId, '❌ Error procesando la captura. Intenta de nuevo.');
+  }
+}
+
+// Manejo de botones inline (callback_query)
+bot.on('callback_query', async (query) => {
+  const chatId = query.message.chat.id;
+  const data = query.data;
+  const state = userStates[chatId];
+
+  try {
+    await bot.answerCallbackQuery(query.id);
+
+    if (!state) return;
+
+    if (data === 'paypal_usar') {
+      // Usar el PayPal guardado
+      state.data.paypalUsado = state.data.paypalGuardado;
+      
+      await bot.editMessageText(
+        `✅ Usando PayPal guardado: ${state.data.paypalGuardado}`,
+        {
+          chat_id: chatId,
+          message_id: query.message.message_id
+        }
+      );
+      
+      // Crear el pedido
+      await crearPedido(chatId, state.data);
+      delete userStates[chatId];
+      
+    } else if (data === 'paypal_cambiar') {
+      // Pedir nuevo PayPal
+      state.step = 'awaiting_nuevo_paypal';
+      
+      await bot.editMessageText(
+        '✏️ Cambiar PayPal',
+        {
+          chat_id: chatId,
+          message_id: query.message.message_id
+        }
+      );
+      
+      await bot.sendMessage(
+        chatId,
+        '💰 Envía tu nuevo email de PayPal:',
+        {
+          reply_markup: {
+            keyboard: [['❌ Cancelar']],
+            resize_keyboard: true
+          }
+        }
+      );
+    }
+  } catch (error) {
+    console.error('Error en callback_query:', error);
+  }
 });
 
-app.get('/api/orders', async (req, res) => {
+// Función para crear pedido
+async function crearPedido(chatId, data) {
   try {
-    const orders = await ordersCollection.find({}).sort({ timestamp: -1 }).toArray();
-    res.json(orders);
+    const newOrder = {
+      orderId: `order_${Date.now()}`,
+      chatId: data.chatId,
+      nombreTelegram: data.nombreTelegram,
+      numeroPedido: data.numeroPedido,
+      capturaUrl: data.capturaUrl,
+      fileId: data.fileId,
+      paypalUsado: data.paypalUsado,
+      intermediarios: data.intermediarios,
+      estado: 'pending',
+      fecha: new Date(),
+      amount: 15,
+      reviewSubmitted: false,
+      reviewLink: ''
+    };
+    
+    await ordersCollection.insertOne(newOrder);
+    
+    await bot.sendMessage(
+      chatId,
+      `✅ *¡PEDIDO CREADO!*\n\n` +
+      `🆔 Order ID: \`${newOrder.numeroPedido}\`\n` +
+      `💰 PayPal: ${newOrder.paypalUsado}\n` +
+      `💵 Monto: $${newOrder.amount}\n` +
+      `📅 Estado: ${newOrder.estado}\n\n` +
+      `Recuerda enviar tu review cuando esté listo usando "📝 Enviar Review"`,
+      { parse_mode: 'Markdown', ...mainKeyboard }
+    );
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('Error creando pedido:', error);
+    await bot.sendMessage(
+      chatId,
+      '❌ Error al crear el pedido. Por favor intenta de nuevo.',
+      mainKeyboard
+    );
   }
+}
+
+// ============= API ROUTES =============
+
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    message: 'AmazonFlow Bot Server',
+    version: '2.0'
+  });
 });
 
 app.get('/api/users', async (req, res) => {
@@ -352,37 +556,22 @@ app.get('/api/users', async (req, res) => {
   }
 });
 
-app.get('/api/intermediaries', async (req, res) => {
+app.get('/api/orders', async (req, res) => {
   try {
-    const users = await usersCollection.find({}).toArray();
-    const intermediariesMap = {};
-    
-    users.forEach(user => {
-      if (user.intermediaries) {
-        user.intermediaries.forEach(nick => {
-          intermediariesMap[nick] = (intermediariesMap[nick] || 0) + 1;
-        });
-      }
-    });
-    
-    const intermediaries = Object.entries(intermediariesMap).map(([nick, count]) => ({
-      nick,
-      count
-    }));
-    
-    res.json(intermediaries);
+    const orders = await ordersCollection.find({}).sort({ fecha: -1 }).toArray();
+    res.json(orders);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.put('/api/orders/:id', async (req, res) => {
+app.put('/api/orders/:orderId', async (req, res) => {
   try {
-    const { id } = req.params;
+    const { orderId } = req.params;
     const updates = req.body;
     
     const result = await ordersCollection.updateOne(
-      { id },
+      { orderId },
       { $set: updates }
     );
     
@@ -390,24 +579,49 @@ app.put('/api/orders/:id', async (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
     
-    const updatedOrder = await ordersCollection.findOne({ id });
+    const updatedOrder = await ordersCollection.findOne({ orderId });
     res.json(updatedOrder);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.delete('/api/orders/:id', async (req, res) => {
+app.delete('/api/orders/:orderId', async (req, res) => {
   try {
-    const { id } = req.params;
+    const { orderId } = req.params;
     
-    const result = await ordersCollection.deleteOne({ id });
+    const result = await ordersCollection.deleteOne({ orderId });
     
     if (result.deletedCount === 0) {
       return res.status(404).json({ error: 'Order not found' });
     }
     
     res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint para obtener la imagen de una captura
+app.get('/api/orders/:orderId/image', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    
+    const order = await ordersCollection.findOne({ orderId });
+    
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    
+    if (!order.capturaUrl) {
+      return res.status(404).json({ error: 'No image found for this order' });
+    }
+    
+    res.json({
+      orderId: order.orderId,
+      capturaUrl: order.capturaUrl,
+      fileId: order.fileId
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -424,25 +638,25 @@ app.get('/api/export/excel', async (req, res) => {
     // Preparar datos de usuarios
     const usersData = users.map(user => ({
       'Chat ID': user.chatId,
-      'Username': user.username,
+      'Nombre Telegram': user.nombreTelegram,
       'PayPal': user.paypal,
-      'Perfil Amazon': user.amazonProfile,
-      'Intermediarios': (user.intermediaries || []).join(', '),
-      'Fecha Registro': user.registeredAt
+      'Intermediarios': user.intermediarios,
+      'Fecha Registro': user.fechaRegistro ? new Date(user.fechaRegistro).toLocaleString('es-ES') : ''
     }));
     
     // Preparar datos de pedidos
     const ordersData = orders.map(order => ({
-      'ID': order.id,
-      'Username': order.username,
-      'Order ID Amazon': order.orderId,
-      'PayPal': order.paypal,
-      'Estado': order.status,
+      'Order ID': order.orderId,
+      'Nombre Telegram': order.nombreTelegram,
+      'Número Pedido': order.numeroPedido,
+      'PayPal Usado': order.paypalUsado,
+      'Estado': order.estado,
       'Review Enviado': order.reviewSubmitted ? 'Sí' : 'No',
       'Link Review': order.reviewLink || '',
       'Monto': order.amount,
-      'Fecha': order.orderDate,
-      'Intermediarios': (order.intermediaries || []).join(', ')
+      'Fecha': order.fecha ? new Date(order.fecha).toLocaleString('es-ES') : '',
+      'Intermediarios': order.intermediarios || '',
+      'URL Captura': order.capturaUrl || ''
     }));
     
     // Crear libro de Excel
@@ -456,7 +670,8 @@ app.get('/api/export/excel', async (req, res) => {
     
     const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
     
-    res.setHeader('Content-Disposition', `attachment; filename=amazonflow_backup_${new Date().toISOString().split('T')[0]}.xlsx`);
+    const fecha = new Date().toISOString().split('T')[0];
+    res.setHeader('Content-Disposition', `attachment; filename=amazonflow_backup_${fecha}.xlsx`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.send(buffer);
     
@@ -472,8 +687,15 @@ async function start() {
   
   app.listen(PORT, () => {
     console.log(`🚀 Servidor en http://localhost:${PORT}`);
-    console.log('🤖 Bot activo');
+    console.log('🤖 Bot activo en modo polling');
     console.log('💾 MongoDB conectado');
+    console.log('📋 Endpoints disponibles:');
+    console.log('   GET  /api/users');
+    console.log('   GET  /api/orders');
+    console.log('   PUT  /api/orders/:orderId');
+    console.log('   DELETE /api/orders/:orderId');
+    console.log('   GET  /api/orders/:orderId/image');
+    console.log('   GET  /api/export/excel');
   });
 }
 
