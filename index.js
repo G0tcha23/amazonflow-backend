@@ -1,8 +1,25 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const { google } = require('googleapis');
+const express = require('express');
 
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
+
+// Servidor HTTP para Render
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+  res.send('✅ Bot de Telegram activo y funcionando');
+});
+
+app.get('/status', (req, res) => {
+  res.json({ status: 'online', bot: 'running' });
+});
+
+app.listen(PORT, () => {
+  console.log(`🌐 Servidor HTTP en puerto ${PORT}`);
+});
 
 // Configuración de Google Sheets
 const auth = new google.auth.GoogleAuth({
