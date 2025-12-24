@@ -36,14 +36,19 @@ const sheets = google.sheets({ version: 'v4', auth });
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const SHEET_NAME = 'Hoja 1';
 
-// Almacenamiento temporal
+// Almacenamiento temporal de datos del pedido
 const userOrders = {};
 
-// Estados
+// Estados del flujo
 const STATES = {
+  ARTICLE: 'article',
   IMAGE: 'image',
   NUMBER: 'number',
-  PAYPAL: 'paypal'
+  PAYPAL: 'paypal',
+  PROFILE: 'profile',
+  REVIEW: 'review',
+  NICK: 'nick',
+  COMMISSION: 'commission'
 };
 
 // Función para añadir pedido a Google Sheets
@@ -51,17 +56,17 @@ async function addOrderToSheet(order) {
   try {
     const fecha = new Date().toLocaleString('es-ES');
     const row = [
-      fecha,              // fecha (automático)
-      '',                 // articulo (vacío)
-      order.imagen,       // IMAGEN/descripcion
-      order.number,       // NUMBER
-      order.paypal,       // PAYPAL
-      '',                 // PERFIL AMZ (vacío)
-      '',                 // REVIEW (vacío)
-      order.nick,         // nick (automático del usuario)
-      '',                 // comision (vacío)
-      'PENDIENTE',        // ESTADO
-      ''                  // vendedor (vacío)
+      fecha,
+      order.articulo,
+      order.imagen,
+      order.number,
+      order.paypal,
+      order.perfil,
+      order.review,
+      order.nick,
+      order.comision,
+      'PENDIENTE',
+      '' // vendedor vacío
     ];
 
     await sheets.spreadsheets.values.append({
@@ -103,26 +108,18 @@ async function getPendingOrders() {
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   bot.sendMessage(chatId, 
-    '¡Bienvenido al Bot de Pedidos! 📦\n\n' +
-    'Para crear un pedido usa: /nuevo\n\n' +
-    'Te pediré:\n' +
-    '1️⃣ Captura del pedido\n' +
-    '2️⃣ Número de pedido\n' +
-    '3️⃣ Tu PayPal\n\n' +
-    'Otros comandos:\n' +
+    '¡Bienvenido al Bot de Gestión de Pedidos! 📦\n\n' +
+    'Comandos disponibles:\n' +
+    '/nuevo - Crear nuevo pedido\n' +
     '/ver - Ver pedidos pendientes\n' +
-    '/ayuda - Ayuda'
+    '/ayuda - Mostrar esta ayuda'
   );
 });
 
 bot.onText(/\/nuevo/, (msg) => {
   const chatId = msg.chat.id;
-  const username = msg.from.username || msg.from.first_name || 'Desconocido';
-  userOrders[chatId] = { 
-    state: STATES.IMAGE,
-    nick: '@' + username
-  };
-  bot.sendMessage(chatId, '📸 Paso 1/3: Envía la captura de tu pedido (imagen o URL)');
+  userOrders[chatId] = { state: STATES.ARTICLE };
+  bot.sendMessage(chatId, '📝 Paso 1/8: Envía el nombre del artículo');
 });
 
 bot.onText(/\/ver/, async (msg) => {
@@ -143,8 +140,12 @@ bot.onText(/\/ver/, async (msg) => {
     mensaje += `━━━━━━━━━━━━━━━━━\n`;
     mensaje += `#${index + 1}\n`;
     mensaje += `📅 Fecha: ${pedido[0]}\n`;
+    mensaje += `📦 Artículo: ${pedido[1]}\n`;
     mensaje += `🔢 Number: ${pedido[3]}\n`;
-    mensaje += `💰 PayPal: ${pedido[4]}\n\n`;
+    mensaje += `💰 PayPal: ${pedido[4]}\n`;
+    mensaje += `👤 Perfil AMZ: ${pedido[5]}\n`;
+    mensaje += `👤 Nick: ${pedido[7]}\n`;
+    mensaje += `💵 Comisión: ${pedido[8]}\n\n`;
   });
 
   bot.sendMessage(chatId, mensaje);
@@ -154,13 +155,10 @@ bot.onText(/\/ayuda/, (msg) => {
   const chatId = msg.chat.id;
   bot.sendMessage(chatId, 
     '📖 AYUDA:\n\n' +
-    '/nuevo - Crear nuevo pedido\n' +
-    'Solo necesitas enviar 3 cosas:\n' +
-    '1. Captura del pedido\n' +
-    '2. Número de pedido\n' +
-    '3. Tu PayPal\n\n' +
-    '/ver - Ver pedidos pendientes\n' +
-    '/cancelar - Cancelar pedido actual'
+    '/nuevo - Iniciar un nuevo pedido\n' +
+    '/ver - Ver todos los pedidos pendientes\n' +
+    '/cancelar - Cancelar el pedido actual\n' +
+    '/ayuda - Mostrar esta ayuda'
   );
 });
 
@@ -174,11 +172,10 @@ bot.onText(/\/cancelar/, (msg) => {
   }
 });
 
-// Manejador de mensajes y fotos
+// Manejador de mensajes
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
-  const photo = msg.photo;
 
   // Ignorar comandos
   if (text && text.startsWith('/')) return;
@@ -187,31 +184,50 @@ bot.on('message', async (msg) => {
   if (!order) return;
 
   switch (order.state) {
+    case STATES.ARTICLE:
+      order.articulo = text;
+      order.state = STATES.IMAGE;
+      bot.sendMessage(chatId, '📸 Paso 2/8: Envía la imagen o descripción del artículo');
+      break;
+
     case STATES.IMAGE:
-      if (photo) {
-        // Si envía foto, guardamos el ID de la foto más grande
-        const fileId = photo[photo.length - 1].file_id;
-        order.imagen = `[Imagen: ${fileId}]`;
-      } else if (text) {
-        // Si envía texto (URL o descripción)
-        order.imagen = text;
-      } else {
-        bot.sendMessage(chatId, '❌ Por favor envía una imagen o URL');
-        return;
-      }
-      
+      order.imagen = text;
       order.state = STATES.NUMBER;
-      bot.sendMessage(chatId, '🔢 Paso 2/3: Envía el número de pedido');
+      bot.sendMessage(chatId, '🔢 Paso 3/8: Envía el NUMBER');
       break;
 
     case STATES.NUMBER:
       order.number = text;
       order.state = STATES.PAYPAL;
-      bot.sendMessage(chatId, '💳 Paso 3/3: Envía tu PayPal');
+      bot.sendMessage(chatId, '💳 Paso 4/8: Envía el PayPal');
       break;
 
     case STATES.PAYPAL:
       order.paypal = text;
+      order.state = STATES.PROFILE;
+      bot.sendMessage(chatId, '👤 Paso 5/8: Envía el Perfil de Amazon');
+      break;
+
+    case STATES.PROFILE:
+      order.perfil = text;
+      order.state = STATES.REVIEW;
+      bot.sendMessage(chatId, '⭐ Paso 6/8: Envía la Review');
+      break;
+
+    case STATES.REVIEW:
+      order.review = text;
+      order.state = STATES.NICK;
+      bot.sendMessage(chatId, '🏷️ Paso 7/8: Envía el Nick');
+      break;
+
+    case STATES.NICK:
+      order.nick = text;
+      order.state = STATES.COMMISSION;
+      bot.sendMessage(chatId, '💵 Paso 8/8: Envía la Comisión');
+      break;
+
+    case STATES.COMMISSION:
+      order.comision = text;
       
       bot.sendMessage(chatId, '⏳ Guardando pedido...');
       
@@ -219,11 +235,14 @@ bot.on('message', async (msg) => {
       
       if (success) {
         bot.sendMessage(chatId, 
-          '✅ ¡Pedido registrado correctamente!\n\n' +
+          '✅ ¡Pedido creado correctamente!\n\n' +
           '📦 Resumen:\n' +
-          `Número: ${order.number}\n` +
-          `PayPal: ${order.paypal}\n\n` +
-          '⏰ Tu pedido está siendo procesado'
+          `Artículo: ${order.articulo}\n` +
+          `Number: ${order.number}\n` +
+          `PayPal: ${order.paypal}\n` +
+          `Perfil: ${order.perfil}\n` +
+          `Nick: ${order.nick}\n` +
+          `Comisión: ${order.comision}`
         );
       } else {
         bot.sendMessage(chatId, '❌ Error al guardar el pedido. Intenta de nuevo más tarde.');
