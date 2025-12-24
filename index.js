@@ -1,799 +1,269 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
-const express = require('express');
-const cors = require('cors');
-const { MongoClient } = require('mongodb');
+const { google } = require('googleapis');
 
-const token = process.env.TELEGRAM_BOT_TOKEN;
-const mongoUri = process.env.MONGODB_URI;
+const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 
-const bot = new TelegramBot(token, { polling: true });
-const app = express();
-const PORT = process.env.PORT || 10000;
+// Configuración de Google Sheets
+const auth = new google.auth.GoogleAuth({
+  credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS),
+  scopes: ['https://www.googleapis.com/auth/spreadsheets']
+});
 
-app.use(cors());
-app.use(express.json());
+const sheets = google.sheets({ version: 'v4', auth });
+const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
+const SHEET_NAME = 'Hoja 1';
 
-// Conexión a MongoDB
-let db;
-let usersCollection;
-let ordersCollection;
-
-async function connectDB() {
+// Función para leer datos del Sheet
+async function leerSheet() {
   try {
-    const client = await MongoClient.connect(mongoUri);
-    
-    db = client.db('amazonflow');
-    usersCollection = db.collection('users');
-    ordersCollection = db.collection('orders');
-    
-    // Crear índices
-    await usersCollection.createIndex({ chatId: 1 }, { unique: true });
-    await ordersCollection.createIndex({ orderId: 1 });
-    
-    console.log('✅ Conectado a MongoDB');
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!A2:K`
+    });
+    return response.data.values || [];
   } catch (error) {
-    console.error('❌ Error conectando a MongoDB:', error);
-    process.exit(1);
+    console.error('Error leyendo Sheet:', error);
+    return [];
   }
 }
 
-// Estados de usuario en memoria
-const userStates = {};
-
-// Keyboard principal
-const mainKeyboard = {
-  reply_markup: {
-    keyboard: [
-      ['👤 Registrarme', '🛍️ Nuevo Pedido'],
-      ['📝 Enviar Review', '📊 Mi Estado'],
-      ['❌ Cancelar']
-    ],
-    resize_keyboard: true
+// Función para agregar nueva fila
+async function agregarFila(datos) {
+  try {
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!A:K`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [datos] }
+    });
+    return true;
+  } catch (error) {
+    console.error('Error agregando fila:', error);
+    return false;
   }
-};
+}
+
+// Función para actualizar una fila
+async function actualizarFila(numeroFila, datos) {
+  try {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!A${numeroFila}:K${numeroFila}`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [datos] }
+    });
+    return true;
+  } catch (error) {
+    console.error('Error actualizando fila:', error);
+    return false;
+  }
+}
+
+// Función para buscar pedido por número
+async function buscarPedidoPorNumero(numero) {
+  const datos = await leerSheet();
+  for (let i = 0; i < datos.length; i++) {
+    if (datos[i][3] === numero) { // Columna NUMBER (índice 3)
+      return { fila: i + 2, datos: datos[i] }; // +2 porque: +1 por encabezado, +1 por índice 0
+    }
+  }
+  return null;
+}
 
 // Comando /start
-bot.onText(/\/start/, async (msg) => {
+bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
-  const username = msg.from.username ? '@' + msg.from.username : msg.from.first_name;
-  
-  await bot.sendMessage(
-    chatId,
-    `¡Hola ${username}! 👋\n\n` +
-    `Bienvenido al bot de AmazonFlow.\n\n` +
-    `Usa los botones para:\n` +
-    `👤 Registrarte\n` +
-    `🛍️ Crear pedidos\n` +
-    `📝 Enviar reviews\n` +
-    `📊 Ver tu estado`,
-    mainKeyboard
+  bot.sendMessage(chatId, 
+    '🤖 *Bot AmazonFlow activo*\n\n' +
+    '*Comandos disponibles:*\n' +
+    '/nuevo - Crear nuevo pedido\n' +
+    '/ver - Ver pedidos pendientes\n' +
+    '/actualizar - Actualizar estado\n' +
+    '/buscar - Buscar por número',
+    { parse_mode: 'Markdown' }
   );
 });
 
-// Validaciones
-function isValidEmail(email) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
+// Comando /nuevo
+const estadoUsuario = {};
 
-function isValidOrderId(orderId) {
-  return /^\d{3}-\d{7}-\d{7}$/.test(orderId);
-}
-
-function isValidAmazonUrl(url) {
-  return url.includes('amazon.com') || url.includes('amazon.es');
-}
-
-// Manejo de FOTOS (capturas de pantalla)
-bot.on('photo', async (msg) => {
+bot.onText(/\/nuevo/, (msg) => {
   const chatId = msg.chat.id;
-  const state = userStates[chatId];
-
-  if (!state || state.step !== 'awaiting_screenshot') {
-    return; // Ignorar fotos si no estamos esperando una captura
-  }
-
-  try {
-    const photo = msg.photo[msg.photo.length - 1]; // La foto de mayor calidad
-    const fileId = photo.file_id;
-    
-    // Obtener información del archivo para construir la URL
-    const file = await bot.getFile(fileId);
-    const capturaUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
-    
-    state.data.capturaUrl = capturaUrl;
-    state.data.fileId = fileId;
-    
-    // Mostrar PayPal guardado y preguntar si quiere cambiarlo
-    const paypalGuardado = state.data.paypalGuardado;
-    
-    state.step = 'awaiting_paypal_confirmacion';
-    
-    await bot.sendMessage(
-      chatId,
-      `✅ Captura recibida\n\n` +
-      `💰 *PayPal guardado:* ${paypalGuardado}\n\n` +
-      `¿Quieres usar este PayPal o cambiarlo?`,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: '✅ Usar este', callback_data: 'paypal_usar' },
-              { text: '✏️ Cambiar PayPal', callback_data: 'paypal_cambiar' }
-            ]
-          ]
-        }
-      }
-    );
-  } catch (error) {
-    console.error('Error procesando captura:', error);
-    await bot.sendMessage(chatId, '❌ Error procesando la captura. Intenta de nuevo.');
-  }
+  estadoUsuario[chatId] = { paso: 1, datos: {} };
+  bot.sendMessage(chatId, '📝 *Paso 1/8:* Envía el nombre del *ARTÍCULO*', { parse_mode: 'Markdown' });
 });
 
-// Manejo de mensajes
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
-  const text = msg.text;
-  const username = msg.from.username ? '@' + msg.from.username : msg.from.first_name;
+  const texto = msg.text;
 
-  if (!text) return;
+  if (!estadoUsuario[chatId] || texto?.startsWith('/')) return;
 
-  // Comandos principales
-  if (text === '❌ Cancelar') {
-    delete userStates[chatId];
-    await bot.sendMessage(chatId, '❌ Operación cancelada', mainKeyboard);
-    return;
-  }
+  const estado = estadoUsuario[chatId];
 
-  if (text === '👤 Registrarme') {
-    const existingUser = await usersCollection.findOne({ chatId });
-    
-    if (existingUser) {
-      await bot.sendMessage(
-        chatId, 
-        `✅ Ya estás registrado\n\n` +
-        `📱 Telegram: ${existingUser.nombreTelegram}\n` +
-        `💰 PayPal: ${existingUser.paypal}\n` +
-        `👥 Intermediarios: ${existingUser.intermediarios}`,
-        mainKeyboard
-      );
-      return;
-    }
+  switch (estado.paso) {
+    case 1: // ARTÍCULO
+      estado.datos.articulo = texto;
+      estado.paso = 2;
+      bot.sendMessage(chatId, '📝 *Paso 2/8:* Envía la *DESCRIPCIÓN* del producto', { parse_mode: 'Markdown' });
+      break;
 
-    userStates[chatId] = { 
-      step: 'awaiting_nombre_telegram', 
-      data: { chatId } 
-    };
-    
-    await bot.sendMessage(
-      chatId,
-      `📝 *REGISTRO DE NUEVO USUARIO*\n\n` +
-      `Por favor, envía tu nombre o nick de Telegram (con @):\n\n` +
-      `Ejemplo: @tunombre`,
-      { 
-        parse_mode: 'Markdown',
-        reply_markup: { 
-          keyboard: [['❌ Cancelar']], 
-          resize_keyboard: true 
-        } 
+    case 2: // DESCRIPCIÓN
+      estado.datos.descripcion = texto;
+      estado.paso = 3;
+      bot.sendMessage(chatId, '📝 *Paso 3/8:* Envía el *NÚMERO DE PEDIDO*', { parse_mode: 'Markdown' });
+      break;
+
+    case 3: // NUMBER
+      estado.datos.number = texto;
+      estado.paso = 4;
+      bot.sendMessage(chatId, '📝 *Paso 4/8:* Envía el correo de *PAYPAL*', { parse_mode: 'Markdown' });
+      break;
+
+    case 4: // PAYPAL
+      estado.datos.paypal = texto;
+      estado.paso = 5;
+      bot.sendMessage(chatId, '📝 *Paso 5/8:* Envía el *PERFIL DE AMAZON*', { parse_mode: 'Markdown' });
+      break;
+
+    case 5: // PERFIL AMZ
+      estado.datos.perfilAmz = texto;
+      estado.paso = 6;
+      bot.sendMessage(chatId, '📝 *Paso 6/8:* Envía el enlace de la *REVIEW*', { parse_mode: 'Markdown' });
+      break;
+
+    case 6: // REVIEW
+      estado.datos.review = texto;
+      estado.paso = 7;
+      bot.sendMessage(chatId, '📝 *Paso 7/8:* Envía el *NICK del comprador*', { parse_mode: 'Markdown' });
+      break;
+
+    case 7: // NICK
+      estado.datos.nick = texto;
+      estado.paso = 8;
+      bot.sendMessage(chatId, '📝 *Paso 8/8:* Envía la *COMISIÓN* (ejemplo: 15)', { parse_mode: 'Markdown' });
+      break;
+
+    case 8: // COMISIÓN
+      estado.datos.comision = texto;
+      
+      // Crear fila para Google Sheet
+      const nuevaFila = [
+        new Date().toLocaleDateString('es-ES'),
+        estado.datos.articulo,
+        estado.datos.descripcion,
+        estado.datos.number,
+        estado.datos.paypal,
+        estado.datos.perfilAmz,
+        estado.datos.review,
+        estado.datos.nick,
+        estado.datos.comision,
+        'PENDIENTE',
+        msg.from.username || msg.from.first_name
+      ];
+
+      const resultado = await agregarFila(nuevaFila);
+
+      if (resultado) {
+        bot.sendMessage(chatId, 
+          '✅ *Pedido creado exitosamente*\n\n' +
+          `📦 Artículo: ${estado.datos.articulo}\n` +
+          `🔢 Número: ${estado.datos.number}\n` +
+          `👤 Nick: ${estado.datos.nick}\n` +
+          `💰 Comisión: ${estado.datos.comision}€`,
+          { parse_mode: 'Markdown' }
+        );
+      } else {
+        bot.sendMessage(chatId, '❌ Error al crear el pedido. Intenta de nuevo.');
       }
-    );
-    return;
-  }
 
-  if (text === '🛍️ Nuevo Pedido') {
-    const user = await usersCollection.findOne({ chatId });
-    
-    if (!user) {
-      await bot.sendMessage(
-        chatId, 
-        '⚠️ *DEBES REGISTRARTE PRIMERO*\n\n' +
-        'Por favor usa el botón "👤 Registrarme" antes de crear un pedido.',
-        { parse_mode: 'Markdown', ...mainKeyboard }
-      );
-      return;
-    }
-
-    userStates[chatId] = { 
-      step: 'awaiting_numero_pedido', 
-      data: { 
-        chatId,
-        nombreTelegram: user.nombreTelegram,
-        paypalGuardado: user.paypal,
-        intermediarios: user.intermediarios
-      } 
-    };
-    
-    await bot.sendMessage(
-      chatId,
-      `📦 *NUEVO PEDIDO*\n\n` +
-      `Envía el número de pedido de Amazon:\n` +
-      `Formato: 111-2233445-6677889`,
-      { 
-        parse_mode: 'Markdown',
-        reply_markup: { 
-          keyboard: [['❌ Cancelar']], 
-          resize_keyboard: true 
-        } 
-      }
-    );
-    return;
-  }
-
-  if (text === '📝 Enviar Review') {
-    const orders = await ordersCollection.find({ 
-      chatId, 
-      reviewSubmitted: false 
-    }).toArray();
-    
-    if (orders.length === 0) {
-      await bot.sendMessage(
-        chatId, 
-        '⚠️ No tienes pedidos pendientes de review', 
-        mainKeyboard
-      );
-      return;
-    }
-
-    userStates[chatId] = { step: 'awaiting_review_link', data: { orders } };
-    
-    let ordersList = '📦 *PEDIDOS PENDIENTES DE REVIEW:*\n\n';
-    orders.forEach((order, index) => {
-      ordersList += `${index + 1}. Order ID: \`${order.numeroPedido}\`\n`;
-    });
-    
-    await bot.sendMessage(
-      chatId,
-      ordersList + '\n🔗 Envía el link de tu review de Amazon:',
-      { 
-        parse_mode: 'Markdown',
-        reply_markup: { 
-          keyboard: [['❌ Cancelar']], 
-          resize_keyboard: true 
-        } 
-      }
-    );
-    return;
-  }
-
-  if (text === '📊 Mi Estado') {
-    const orders = await ordersCollection.find({ chatId }).toArray();
-    
-    if (orders.length === 0) {
-      await bot.sendMessage(chatId, '📊 Aún no tienes pedidos', mainKeyboard);
-      return;
-    }
-
-    const stats = {
-      total: orders.length,
-      pending: orders.filter(o => !o.reviewSubmitted).length,
-      reviewed: orders.filter(o => o.reviewSubmitted && o.estado === 'reviewed').length,
-      paid: orders.filter(o => o.estado === 'paid').length,
-      totalEarned: orders.filter(o => o.estado === 'paid').reduce((sum, o) => sum + (o.amount || 15), 0)
-    };
-
-    await bot.sendMessage(
-      chatId,
-      `📊 *TU ESTADO*\n\n` +
-      `📦 Total de pedidos: ${stats.total}\n` +
-      `⏳ Pendientes de review: ${stats.pending}\n` +
-      `✅ Reviews enviados: ${stats.reviewed}\n` +
-      `💰 Pagados: ${stats.paid}\n` +
-      `💵 Total ganado: $${stats.totalEarned}`,
-      { parse_mode: 'Markdown', ...mainKeyboard }
-    );
-    return;
-  }
-
-  // Manejo de estados
-  const state = userStates[chatId];
-  if (!state) return;
-
-  try {
-    switch (state.step) {
-      // ============= FLUJO DE REGISTRO =============
-      case 'awaiting_nombre_telegram':
-        if (!text.startsWith('@')) {
-          await bot.sendMessage(
-            chatId, 
-            '❌ El nombre debe empezar con @\n\nEjemplo: @tunombre'
-          );
-          return;
-        }
-        state.data.nombreTelegram = text;
-        state.step = 'awaiting_paypal_registro';
-        await bot.sendMessage(
-          chatId, 
-          '💰 Ahora envía tu email de PayPal:'
-        );
-        break;
-
-      case 'awaiting_paypal_registro':
-        if (!isValidEmail(text)) {
-          await bot.sendMessage(chatId, '❌ Email inválido. Por favor envía un email válido:');
-          return;
-        }
-        state.data.paypal = text;
-        state.step = 'awaiting_intermediarios';
-        await bot.sendMessage(
-          chatId, 
-          '👥 Envía los nombres de tus intermediarios (para referencias):\n\n' +
-          'Puedes enviar uno o varios separados por comas.\n' +
-          'Ejemplo: Juan, María, Pedro'
-        );
-        break;
-
-      case 'awaiting_intermediarios':
-        state.data.intermediarios = text.trim();
-        state.data.fechaRegistro = new Date();
-        
-        await usersCollection.insertOne(state.data);
-        
-        await bot.sendMessage(
-          chatId,
-          `✅ *¡REGISTRO COMPLETADO!*\n\n` +
-          `📱 Telegram: ${state.data.nombreTelegram}\n` +
-          `💰 PayPal: ${state.data.paypal}\n` +
-          `👥 Intermediarios: ${state.data.intermediarios}\n\n` +
-          `Ya puedes crear pedidos usando "🛍️ Nuevo Pedido"`,
-          { parse_mode: 'Markdown', ...mainKeyboard }
-        );
-        
-        delete userStates[chatId];
-        break;
-
-      // ============= FLUJO DE PEDIDO =============
-      case 'awaiting_numero_pedido':
-        if (!isValidOrderId(text)) {
-          await bot.sendMessage(
-            chatId, 
-            '❌ Número de pedido inválido.\n\n' +
-            'Formato correcto: 111-2233445-6677889'
-          );
-          return;
-        }
-        state.data.numeroPedido = text;
-        state.step = 'awaiting_screenshot';
-        await bot.sendMessage(
-          chatId, 
-          '📸 Ahora envía una captura de pantalla del pedido:'
-        );
-        break;
-
-      case 'awaiting_paypal_confirmacion':
-        // Este caso se maneja con botones inline (callback_query)
-        break;
-
-      case 'awaiting_nuevo_paypal':
-        if (!isValidEmail(text)) {
-          await bot.sendMessage(chatId, '❌ Email inválido. Por favor envía un email válido:');
-          return;
-        }
-        
-        // Actualizar PayPal en el perfil del usuario
-        await usersCollection.updateOne(
-          { chatId },
-          { $set: { paypal: text } }
-        );
-        
-        state.data.paypalUsado = text;
-        
-        // Crear el pedido
-        await crearPedido(chatId, state.data);
-        delete userStates[chatId];
-        break;
-
-      // ============= FLUJO DE REVIEW =============
-      case 'awaiting_review_link':
-        if (!isValidAmazonUrl(text)) {
-          await bot.sendMessage(chatId, '❌ Link inválido. Debe ser un link de Amazon:');
-          return;
-        }
-        
-        const orderToUpdate = state.data.orders[0];
-        
-        await ordersCollection.updateOne(
-          { orderId: orderToUpdate.orderId },
-          { 
-            $set: { 
-              reviewSubmitted: true,
-              reviewLink: text,
-              estado: 'reviewed'
-            } 
-          }
-        );
-        
-        await bot.sendMessage(
-          chatId,
-          `✅ *¡REVIEW ENVIADO!*\n\n` +
-          `Order ID: \`${orderToUpdate.numeroPedido}\`\n` +
-          `Estado: reviewed\n\n` +
-          `Recibirás el pago pronto.`,
-          { parse_mode: 'Markdown', ...mainKeyboard }
-        );
-        
-        delete userStates[chatId];
-        break;
-    }
-  } catch (error) {
-    console.error('Error procesando mensaje:', error);
-    await bot.sendMessage(
-      chatId, 
-      '❌ Error procesando tu solicitud. Intenta de nuevo.', 
-      mainKeyboard
-    );
-    delete userStates[chatId];
+      delete estadoUsuario[chatId];
+      break;
   }
 });
 
-// Manejo de botones inline (callback_query)
-bot.on('callback_query', async (query) => {
-  const chatId = query.message.chat.id;
-  const data = query.data;
-  const state = userStates[chatId];
-
-  try {
-    await bot.answerCallbackQuery(query.id);
-
-    if (!state) return;
-
-    if (data === 'paypal_usar') {
-      // Usar el PayPal guardado
-      state.data.paypalUsado = state.data.paypalGuardado;
-      
-      await bot.editMessageText(
-        `✅ Usando PayPal guardado: ${state.data.paypalGuardado}`,
-        {
-          chat_id: chatId,
-          message_id: query.message.message_id
-        }
-      );
-      
-      // Crear el pedido
-      await crearPedido(chatId, state.data);
-      delete userStates[chatId];
-      
-    } else if (data === 'paypal_cambiar') {
-      // Pedir nuevo PayPal
-      state.step = 'awaiting_nuevo_paypal';
-      
-      await bot.editMessageText(
-        '✏️ Cambiar PayPal',
-        {
-          chat_id: chatId,
-          message_id: query.message.message_id
-        }
-      );
-      
-      await bot.sendMessage(
-        chatId,
-        '💰 Envía tu nuevo email de PayPal:',
-        {
-          reply_markup: {
-            keyboard: [['❌ Cancelar']],
-            resize_keyboard: true
-          }
-        }
-      );
-    }
-  } catch (error) {
-    console.error('Error en callback_query:', error);
-  }
-});
-
-// Función para crear pedido
-async function crearPedido(chatId, data) {
-  try {
-    const newOrder = {
-      orderId: `order_${Date.now()}`,
-      chatId: data.chatId,
-      username: data.nombreTelegram || 'Unknown', // Para compatibilidad con panel
-      nombreTelegram: data.nombreTelegram,
-      numeroPedido: data.numeroPedido,
-      capturaUrl: data.capturaUrl,
-      fileId: data.fileId,
-      paypalUsado: data.paypalUsado,
-      paypal: data.paypalUsado, // Para compatibilidad con panel
-      intermediaries: data.intermediarios ? data.intermediarios.split(',').map(i => i.trim()) : [], // Para panel
-      intermediarios: data.intermediarios,
-      amazonProfile: data.amazonProfile || '',
-      estado: 'pending',
-      orderStatus: 'new', // Para el workflow del panel
-      fecha: new Date(),
-      timestamp: new Date().toISOString(), // Para compatibilidad
-      amount: 15,
-      reviewSubmitted: false,
-      reviewLink: '',
-      productType: '',
-      orderDate: new Date().toISOString().split('T')[0]
-    };
-    
-    await ordersCollection.insertOne(newOrder);
-    
-    await bot.sendMessage(
-      chatId,
-      `✅ *¡PEDIDO CREADO!*\n\n` +
-      `🆔 Order ID: \`${newOrder.numeroPedido}\`\n` +
-      `💰 PayPal: ${newOrder.paypalUsado}\n` +
-      `💵 Monto: $${newOrder.amount}\n` +
-      `📅 Estado: ${newOrder.estado}\n\n` +
-      `Recuerda enviar tu review cuando esté listo usando "📝 Enviar Review"`,
-      { parse_mode: 'Markdown', ...mainKeyboard }
-    );
-  } catch (error) {
-    console.error('Error creando pedido:', error);
-    await bot.sendMessage(
-      chatId,
-      '❌ Error al crear el pedido. Por favor intenta de nuevo.',
-      mainKeyboard
-    );
-  }
-}
-
-// ============= API ROUTES =============
-
-app.get('/', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    message: 'AmazonFlow Bot Server',
-    version: '2.0'
-  });
-});
-
-app.get('/api/users', async (req, res) => {
-  try {
-    const users = await usersCollection.find({}).toArray();
-    res.json(users);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/orders', async (req, res) => {
-  try {
-    const orders = await ordersCollection.find({}).sort({ fecha: -1 }).toArray();
-    res.json(orders);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.put('/api/orders/:orderId', async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const updates = req.body;
-    
-    const result = await ordersCollection.updateOne(
-      { orderId },
-      { $set: updates }
-    );
-    
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
-    
-    const updatedOrder = await ordersCollection.findOne({ orderId });
-    res.json(updatedOrder);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.delete('/api/orders/:orderId', async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    
-    const result = await ordersCollection.deleteOne({ orderId });
-    
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
-    
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Endpoint para obtener la imagen de una captura
-app.get('/api/orders/:orderId/image', async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    
-    const order = await ordersCollection.findOne({ orderId });
-    
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
-    
-    if (!order.capturaUrl) {
-      return res.status(404).json({ error: 'No image found for this order' });
-    }
-    
-    res.json({
-      orderId: order.orderId,
-      capturaUrl: order.capturaUrl,
-      fileId: order.fileId
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Endpoint para obtener la imagen de una captura
-app.get('/api/orders/:orderId/image', async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    
-    const order = await ordersCollection.findOne({ orderId });
-    
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
-    
-    if (!order.capturaUrl) {
-      return res.status(404).json({ error: 'No image found for this order' });
-    }
-    
-    res.json({
-      orderId: order.orderId,
-      capturaUrl: order.capturaUrl,
-      fileId: order.fileId
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Endpoint para descargar CSV optimizado para Google Sheets
-app.get('/api/export/csv', async (req, res) => {
-  try {
-    const orders = await ordersCollection.find({}).sort({ fecha: -1 }).toArray();
-    
-    // Headers compactos
-    const headers = [
-      'Estado',
-      'Fecha Pedido', 
-      'Tipo',
-      'Usuario',
-      'PayPal',
-      'Order ID',
-      'Amazon',
-      'Fecha Registro',
-      'Monto',
-      'Comisión',
-      'Cobrada',
-      'Captura'
-    ];
-    
-    // Mapear estados a texto corto
-    const estadoMap: { [key: string]: string } = {
-      'new': 'Nuevo',
-      'pending_refund': 'Pend. Reemb.',
-      'pending_commission': 'Pend. Com.',
-      'completed': 'Completado',
-      'pending': 'Pendiente',
-      'reviewed': 'Revisado',
-      'paid': 'Pagado'
-    };
-    
-    // Preparar filas
-    const rows = orders.map(order => [
-      estadoMap[order.orderStatus || order.estado || 'new'] || 'Nuevo',
-      order.orderDate || new Date(order.fecha).toLocaleDateString('es-ES'),
-      order.productType || '',
-      order.nombreTelegram || order.username || '',
-      order.paypalUsado || order.paypal || '',
-      order.numeroPedido || order.orderId || '',
-      order.amazonProfile ? 'Ver' : '',
-      new Date(order.fecha || order.timestamp).toLocaleDateString('es-ES'),
-      order.amount || 15,
-      order.commission || '',
-      order.commissionPaid ? 'Sí' : 'No',
-      order.capturaUrl || ''
-    ]);
-    
-    // Crear CSV
-    const csvContent = [
-      headers.join(','),
-      ...rows.map(row => row.map(cell => {
-        // Escapar comas y comillas
-        const str = String(cell);
-        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-          return `"${str.replace(/"/g, '""')}"`;
-        }
-        return str;
-      }).join(','))
-    ].join('\n');
-    
-    // Enviar con BOM para UTF-8 en Excel/Google Sheets
-    const bom = '\uFEFF';
-    const buffer = Buffer.from(bom + csvContent, 'utf-8');
-    
-    const fecha = new Date().toISOString().split('T')[0];
-    res.setHeader('Content-Disposition', `attachment; filename=amazonflow_${fecha}.csv`);
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.send(buffer);
-    
-  } catch (error) {
-    console.error('Error generando CSV:', error);
-    res.status(500).json({ error: 'Error generando archivo CSV' });
-  }
-});
-
-// Endpoint para descargar Excel
-app.get('/api/export/excel', async (req, res) => {
-  try {
-    const XLSX = require('xlsx');
-    
-    const users = await usersCollection.find({}).toArray();
-    const orders = await ordersCollection.find({}).toArray();
-    
-    // Preparar datos de usuarios
-    const usersData = users.map(user => ({
-      'Chat ID': user.chatId,
-      'Nombre Telegram': user.nombreTelegram,
-      'PayPal': user.paypal,
-      'Intermediarios': user.intermediarios,
-      'Fecha Registro': user.fechaRegistro ? new Date(user.fechaRegistro).toLocaleString('es-ES') : ''
-    }));
-    
-    // Preparar datos de pedidos
-    const ordersData = orders.map(order => ({
-      'Order ID': order.orderId,
-      'Nombre Telegram': order.nombreTelegram,
-      'Número Pedido': order.numeroPedido,
-      'PayPal Usado': order.paypalUsado,
-      'Estado': order.estado,
-      'Review Enviado': order.reviewSubmitted ? 'Sí' : 'No',
-      'Link Review': order.reviewLink || '',
-      'Monto': order.amount,
-      'Fecha': order.fecha ? new Date(order.fecha).toLocaleString('es-ES') : '',
-      'Intermediarios': order.intermediarios || '',
-      'URL Captura': order.capturaUrl || ''
-    }));
-    
-    // Crear libro de Excel
-    const wb = XLSX.utils.book_new();
-    
-    const wsUsers = XLSX.utils.json_to_sheet(usersData);
-    XLSX.utils.book_append_sheet(wb, wsUsers, 'Usuarios');
-    
-    const wsOrders = XLSX.utils.json_to_sheet(ordersData);
-    XLSX.utils.book_append_sheet(wb, wsOrders, 'Pedidos');
-    
-    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-    
-    const fecha = new Date().toISOString().split('T')[0];
-    res.setHeader('Content-Disposition', `attachment; filename=amazonflow_backup_${fecha}.xlsx`);
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.send(buffer);
-    
-  } catch (error) {
-    console.error('Error generando Excel:', error);
-    res.status(500).json({ error: 'Error generando archivo Excel' });
-  }
-});
-
-// Iniciar servidor
-async function start() {
-  await connectDB();
+// Comando /ver
+bot.onText(/\/ver/, async (msg) => {
+  const chatId = msg.chat.id;
   
-  app.listen(PORT, () => {
-    console.log(`🚀 Servidor en http://localhost:${PORT}`);
-    console.log('🤖 Bot activo en modo polling');
-    console.log('💾 MongoDB conectado');
-    console.log('📋 Endpoints disponibles:');
-    console.log('   GET  /api/users');
-    console.log('   GET  /api/orders');
-    console.log('   PUT  /api/orders/:orderId');
-    console.log('   DELETE /api/orders/:orderId');
-    console.log('   GET  /api/orders/:orderId/image');
-    console.log('   GET  /api/export/csv');
-    console.log('   GET  /api/export/excel');
-  });
-}
+  const datos = await leerSheet();
+  const pendientes = datos.filter(fila => fila[9] === 'PENDIENTE'); // Columna ESTADO
 
-start().catch(console.error);
+  if (pendientes.length === 0) {
+    bot.sendMessage(chatId, '📋 No hay pedidos pendientes.');
+    return;
+  }
+
+  let mensaje = '📋 *PEDIDOS PENDIENTES:*\n\n';
+  pendientes.forEach(fila => {
+    mensaje += `🔢 ${fila[3]}\n`; // NUMBER
+    mensaje += `📦 ${fila[1]}\n`; // ARTÍCULO
+    mensaje += `👤 ${fila[7]}\n`; // NICK
+    mensaje += `💰 ${fila[8]}€\n\n`; // COMISIÓN
+  });
+
+  bot.sendMessage(chatId, mensaje, { parse_mode: 'Markdown' });
+});
+
+// Comando /actualizar
+bot.onText(/\/actualizar (.+) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const numero = match[1];
+  const nuevoEstado = match[2].toUpperCase();
+
+  const pedido = await buscarPedidoPorNumero(numero);
+
+  if (!pedido) {
+    bot.sendMessage(chatId, `❌ No se encontró pedido con número: ${numero}`);
+    return;
+  }
+
+  const datosActualizados = [...pedido.datos];
+  datosActualizados[9] = nuevoEstado; // Actualizar columna ESTADO
+
+  const resultado = await actualizarFila(pedido.fila, datosActualizados);
+
+  if (resultado) {
+    bot.sendMessage(chatId, 
+      `✅ Pedido actualizado\n\n` +
+      `🔢 Número: ${numero}\n` +
+      `📊 Estado: ${nuevoEstado}`,
+      { parse_mode: 'Markdown' }
+    );
+  } else {
+    bot.sendMessage(chatId, '❌ Error al actualizar el pedido.');
+  }
+});
+
+// Comando /buscar
+bot.onText(/\/buscar (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const numero = match[1];
+
+  const pedido = await buscarPedidoPorNumero(numero);
+
+  if (!pedido) {
+    bot.sendMessage(chatId, `❌ No se encontró pedido con número: ${numero}`);
+    return;
+  }
+
+  const [fecha, articulo, descripcion, number, paypal, perfilAmz, review, nick, comision, estado] = pedido.datos;
+
+  bot.sendMessage(chatId,
+    `📦 *PEDIDO ENCONTRADO*\n\n` +
+    `📅 Fecha: ${fecha}\n` +
+    `📦 Artículo: ${articulo}\n` +
+    `📝 Descripción: ${descripcion}\n` +
+    `🔢 Número: ${number}\n` +
+    `💳 PayPal: ${paypal}\n` +
+    `🛒 Perfil AMZ: ${perfilAmz}\n` +
+    `⭐ Review: ${review}\n` +
+    `👤 Nick: ${nick}\n` +
+    `💰 Comisión: ${comision}€\n` +
+    `📊 Estado: ${estado}`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+console.log('🤖 Bot iniciado con Google Sheets...');
