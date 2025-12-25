@@ -306,9 +306,7 @@ bot.on('message', async (msg) => {
         state.step = 'awaiting_intermediarios';
         await bot.sendMessage(
           chatId,
-          `👥 Envía los nombres de tus *intermediarios para referencias*:\n\n` +
-          `Puedes enviar 2 o 3 nombres/nicks (con @ si quieres) separados por comas.\n\n` +
-          `Ejemplo: Juan, @maria, Pedro`,
+          `👥 Envía 2 o 3 *intermediarios* (nombres o nicks):`,
           { parse_mode: 'Markdown' }
         );
         break;
@@ -328,10 +326,6 @@ bot.on('message', async (msg) => {
           await bot.sendMessage(
             chatId,
             `✅ *¡REGISTRO COMPLETADO!*\n\n` +
-            `✓ Usuario: ${state.data.username}\n` +
-            `✓ Amazon: ${state.data.amazonProfile}\n` +
-            `✓ PayPal: ${state.data.paypal}\n` +
-            `✓ Intermediarios: ${state.data.intermediarios}\n\n` +
             `Ya puedes hacer pedidos 🛍️`,
             {
               parse_mode: 'Markdown',
@@ -389,18 +383,18 @@ bot.on('message', async (msg) => {
             `📦 *NUEVO PEDIDO*\n\n` +
             `📅 Fecha: ${new Date().toLocaleDateString('es-ES')}\n` +
             `👤 Usuario: ${state.data.username}\n` +
-            `🆔 Número de pedido: \`${state.data.numeroPedido}\`\n` +
+            `🆔 Pedido: \`${state.data.numeroPedido}\`\n` +
             `💰 PayPal: ${state.data.paypal}\n` +
             `📸 Captura: ${state.data.capturaUrl}`;
           
           await bot.sendMessage(
             chatId,
             `✅ *¡PEDIDO REGISTRADO!*\n\n` +
-            `📋 *COPIA ESTO PARA EL SELLER:*\n` +
-            `━━━━━━━━━━━━━━━━━━━━\n` +
+            `📋 Copia esto para el seller:\n` +
+            `━━━━━━━━━━━━━\n` +
             resumenSeller + `\n` +
-            `━━━━━━━━━━━━━━━━━━━━\n\n` +
-            `Recuerda enviar tu review cuando la hagas usando "⭐ SUBIR REVIEW"`,
+            `━━━━━━━━━━━━━\n\n` +
+            `Recuerda subir tu review después 🌟`,
             {
               parse_mode: 'Markdown',
               reply_markup: {
@@ -474,17 +468,17 @@ bot.on('message', async (msg) => {
           const resumenReview = 
             `⭐ *REVIEW COMPLETADO*\n\n` +
             `👤 Usuario: ${state.data.username}\n` +
-            `🆔 Número de pedido: \`${state.data.numeroPedido}\`\n` +
+            `🆔 Pedido: \`${state.data.numeroPedido}\`\n` +
             `🔗 Review: ${state.data.reviewLink}\n` +
             `💰 PayPal: ${state.data.paypal}`;
           
           await bot.sendMessage(
             chatId,
             `✅ *¡REVIEW REGISTRADO!*\n\n` +
-            `📋 *COPIA ESTO PARA EL SELLER:*\n` +
-            `━━━━━━━━━━━━━━━━━━━━\n` +
+            `📋 Copia esto para el seller:\n` +
+            `━━━━━━━━━━━━━\n` +
             resumenReview + `\n` +
-            `━━━━━━━━━━━━━━━━━━━━\n\n` +
+            `━━━━━━━━━━━━━\n\n` +
             `¡Gracias! Recibirás tu pago pronto 💰`,
             {
               parse_mode: 'Markdown',
@@ -497,8 +491,8 @@ bot.on('message', async (msg) => {
         } else {
           await bot.sendMessage(
             chatId,
-            '⚠️ No se encontró el pedido en el sistema.\n' +
-            'Verifica el número de pedido e intenta de nuevo.',
+            '⚠️ No se encontró el pedido.\n' +
+            'Verifica el número e intenta de nuevo.',
             {
               reply_markup: {
                 keyboard: [[{ text: '🚀 EMPEZAR 🚀' }]],
