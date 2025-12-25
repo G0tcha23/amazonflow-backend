@@ -29,6 +29,15 @@ const bot = new TelegramBot(token, { polling: true });
 const userStates = {};
 const userPhotos = {}; // Almacenar fotos temporalmente
 
+// ID del admin (tu chat ID de Telegram)
+// Para obtenerlo, envía /start al bot y mira los logs
+const ADMIN_CHAT_IDS = []; // Añade tu chat ID aquí cuando lo sepas
+
+// Función para verificar si un usuario es admin
+function isAdmin(chatId) {
+  return ADMIN_CHAT_IDS.includes(chatId) || ADMIN_CHAT_IDS.length === 0; // Si está vacío, todos son admin
+}
+
 // ========== FUNCIONES DE GOOGLE SHEETS ==========
 async function addToSheet(sheetName, values) {
   try {
@@ -113,17 +122,120 @@ async function updateOrderInSheet(numeroPedido, reviewLink) {
           },
           {
             range: `Pedidos!K${order.row}`, // Columna K: ESTADO
-            values: [['Review Enviado']]
+            values: [['Review Enviada']]
           }
         ]
       }
     });
+    
+    // Aplicar color azul celeste a la fila
+    await applyRowColor(order.row, { red: 0.8, green: 0.9, blue: 1 }); // Azul celeste
     
     console.log(`✅ Review actualizado en fila ${order.row}`);
     return true;
   } catch (error) {
     console.error('Error actualizando Google Sheets:', error);
     return false;
+  }
+}
+
+// Función para aplicar color a una fila
+async function applyRowColor(rowNumber, color) {
+  try {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      resource: {
+        requests: [{
+          repeatCell: {
+            range: {
+              sheetId: await getSheetId('Pedidos'),
+              startRowIndex: rowNumber - 1,
+              endRowIndex: rowNumber
+            },
+            cell: {
+              userEnteredFormat: {
+                backgroundColor: color
+              }
+            },
+            fields: 'userEnteredFormat.backgroundColor'
+          }
+        }]
+      }
+    });
+  } catch (error) {
+    console.error('Error aplicando color:', error);
+  }
+}
+
+// Función para obtener el ID de una hoja
+async function getSheetId(sheetName) {
+  try {
+    const spreadsheet = await sheets.spreadsheets.get({
+      spreadsheetId: SHEET_ID
+    });
+    
+    const sheet = spreadsheet.data.sheets.find(s => s.properties.title === sheetName);
+    return sheet ? sheet.properties.sheetId : 0;
+  } catch (error) {
+    console.error('Error obteniendo sheet ID:', error);
+    return 0;
+  }
+}
+
+// Función para obtener el chat ID del usuario a partir del número de pedido
+async function getChatIdFromOrder(numeroPedido) {
+  try {
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: 'Pedidos!A:L'
+    });
+    
+    const rows = response.data.values;
+    if (!rows) return null;
+    
+    // Buscar el pedido y obtener el nick de columna I
+    for (let i = 1; i < rows.length; i++) {
+      if (rows[i][4] === numeroPedido) { // Columna E (NUMERO)
+        const nick = rows[i][8]; // Columna I (NICK)
+        return { nick, row: i + 1 };
+      }
+    }
+    return null;
+  } catch (error) {
+    console.error('Error obteniendo chat ID:', error);
+    return null;
+  }
+}
+
+// Función para notificar reembolso pagado
+async function notifyRefundPaid(numeroPedido) {
+  try {
+    const orderInfo = await getChatIdFromOrder(numeroPedido);
+    if (!orderInfo) {
+      return { success: false, error: 'Pedido no encontrado' };
+    }
+    
+    // Actualizar estado a "Review Pagada" y aplicar color azul oscuro
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `Pedidos!K${orderInfo.row}`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [['Review Pagada']] }
+    });
+    
+    // Aplicar color azul oscuro
+    await applyRowColor(orderInfo.row, { red: 0.2, green: 0.4, blue: 0.8 });
+    
+    console.log(`✅ Estado actualizado a "Review Pagada" para pedido ${numeroPedido}`);
+    
+    return { 
+      success: true, 
+      nick: orderInfo.nick,
+      message: `✅ Pedido ${numeroPedido} marcado como pagado`
+    };
+  } catch (error) {
+    console.error('Error notificando reembolso:', error);
+    return { success: false, error: error.message };
   }
 }
 
@@ -146,10 +258,13 @@ bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   const username = msg.from.username ? '@' + msg.from.username : msg.from.first_name;
   
+  console.log(`👤 Usuario conectado - Chat ID: ${chatId}, Username: ${username}`);
+  
   await bot.sendMessage(
     chatId,
     `🎯 *¡Bienvenido a AmazonFlow!* 🎯\n\n` +
-    `Hola ${username}, presiona el botón para comenzar 👇`,
+    `Hola ${username}, presiona el botón para comenzar 👇\n\n` +
+    `_Tu Chat ID: ${chatId}_`,
     {
       parse_mode: 'Markdown',
       reply_markup: {
@@ -166,7 +281,29 @@ bot.onText(/\/start/, async (msg) => {
 bot.on('photo', async (msg) => {
   const chatId = msg.chat.id;
   const state = userStates[chatId];
+  const caption = msg.caption ? msg.caption.trim() : '';
 
+  // ADMIN: Envía captura con número de pedido para marcar como pagado
+  if (isAdmin(chatId) && caption && isValidOrderId(caption)) {
+    const result = await notifyRefundPaid(caption);
+    
+    if (result.success) {
+      await bot.sendMessage(
+        chatId,
+        `✅ *¡REEMBOLSO MARCADO COMO PAGADO!*\n\n` +
+        `🆔 Pedido: \`${caption}\`\n` +
+        `👤 Usuario: ${result.nick}\n` +
+        `🎨 Color: Azul oscuro aplicado\n` +
+        `📊 Estado: Review Pagada`,
+        { parse_mode: 'Markdown' }
+      );
+    } else {
+      await bot.sendMessage(chatId, `❌ Error: ${result.error}`);
+    }
+    return;
+  }
+
+  // Usuario normal enviando captura de pedido
   if (!state || state.step !== 'awaiting_screenshot') {
     return;
   }
@@ -205,6 +342,19 @@ bot.on('message', async (msg) => {
 
   // ========== BOTÓN EMPEZAR ==========
   if (text === '🚀 EMPEZAR 🚀') {
+    const keyboard = [
+      [{ text: '👤 REGISTRARSE' }],
+      [{ text: '🛍️ HACER PEDIDO' }],
+      [{ text: '⭐ SUBIR REVIEW' }]
+    ];
+    
+    // Si es admin, añadir opción de marcar como pagado
+    if (isAdmin(chatId)) {
+      keyboard.push([{ text: '💰 MARCAR PAGADO' }]);
+    }
+    
+    keyboard.push([{ text: '❌ Cancelar' }]);
+    
     await bot.sendMessage(
       chatId,
       `📋 *MENÚ PRINCIPAL*\n\n` +
@@ -212,12 +362,7 @@ bot.on('message', async (msg) => {
       {
         parse_mode: 'Markdown',
         reply_markup: {
-          keyboard: [
-            [{ text: '👤 REGISTRARSE' }],
-            [{ text: '🛍️ HACER PEDIDO' }],
-            [{ text: '⭐ SUBIR REVIEW' }],
-            [{ text: '❌ Cancelar' }]
-          ],
+          keyboard: keyboard,
           resize_keyboard: true
         }
       }
@@ -299,6 +444,29 @@ bot.on('message', async (msg) => {
       chatId,
       `⭐ *SUBIR REVIEW*\n\n` +
       `Envía el *link de tu review* en Amazon:`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          keyboard: [[{ text: '❌ Cancelar' }]],
+          resize_keyboard: true
+        }
+      }
+    );
+    return;
+  }
+
+  // ========== MARCAR COMO PAGADO (SOLO ADMIN) ==========
+  if (text === '💰 MARCAR PAGADO' && isAdmin(chatId)) {
+    userStates[chatId] = { 
+      step: 'awaiting_refund_numero', 
+      data: { isAdmin: true } 
+    };
+    
+    await bot.sendMessage(
+      chatId,
+      `💰 *MARCAR REEMBOLSO COMO PAGADO*\n\n` +
+      `Envía el *número de pedido* que ya pagaste:\n\n` +
+      `Formato: \`111-2233445-6677889\``,
       {
         parse_mode: 'Markdown',
         reply_markup: {
@@ -544,6 +712,52 @@ bot.on('message', async (msg) => {
             chatId,
             '⚠️ No se encontró el pedido.\n' +
             'Verifica el número e intenta de nuevo.',
+            {
+              reply_markup: {
+                keyboard: [[{ text: '🚀 EMPEZAR 🚀' }]],
+                resize_keyboard: true
+              }
+            }
+          );
+        }
+        
+        delete userStates[chatId];
+        break;
+      
+      // ========== FLUJO DE MARCAR COMO PAGADO (ADMIN) ==========
+      case 'awaiting_refund_numero':
+        if (!isValidOrderId(text)) {
+          await bot.sendMessage(
+            chatId,
+            '❌ Número de pedido inválido.\n\n' +
+            'Formato correcto: `111-2233445-6677889`',
+            { parse_mode: 'Markdown' }
+          );
+          return;
+        }
+        
+        const result = await notifyRefundPaid(text);
+        
+        if (result.success) {
+          await bot.sendMessage(
+            chatId,
+            `✅ *¡REEMBOLSO MARCADO COMO PAGADO!*\n\n` +
+            `🆔 Pedido: \`${text}\`\n` +
+            `👤 Usuario: ${result.nick}\n` +
+            `🎨 Color: Azul oscuro aplicado\n` +
+            `📊 Estado: Review Pagada`,
+            {
+              parse_mode: 'Markdown',
+              reply_markup: {
+                keyboard: [[{ text: '🚀 EMPEZAR 🚀' }]],
+                resize_keyboard: true
+              }
+            }
+          );
+        } else {
+          await bot.sendMessage(
+            chatId,
+            `❌ Error: ${result.error}`,
             {
               reply_markup: {
                 keyboard: [[{ text: '🚀 EMPEZAR 🚀' }]],
