@@ -339,12 +339,26 @@ bot.on('message', async (msg) => {
       state.step = 'awaiting_captura';
       bot.sendMessage(chatId, '📸 Envía la captura del pedido:');
       
-    } else if (state.step === 'awaiting_captura' && msg.photo) {
-      const photo = msg.photo[msg.photo.length - 1];
-      const fileLink = await bot.getFileLink(photo.file_id);
-      state.imagenUrl = fileLink;
-      state.step = 'awaiting_paypal_pedido';
-      bot.sendMessage(chatId, '💰 Envía tu PayPal:');
+    } else if (state.step === 'awaiting_captura') {
+      let fileId = null;
+      
+      // Aceptar foto comprimida
+      if (msg.photo) {
+        fileId = msg.photo[msg.photo.length - 1].file_id;
+      }
+      // Aceptar documento/archivo (capturas sin comprimir)
+      else if (msg.document && msg.document.mime_type && msg.document.mime_type.startsWith('image/')) {
+        fileId = msg.document.file_id;
+      }
+      
+      if (fileId) {
+        const fileLink = await bot.getFileLink(fileId);
+        state.imagenUrl = fileLink;
+        state.step = 'awaiting_paypal_pedido';
+        bot.sendMessage(chatId, '💰 Envía tu PayPal:');
+      } else {
+        bot.sendMessage(chatId, '⚠️ Por favor envía una imagen válida (foto o captura de pantalla).');
+      }
       
     } else if (state.step === 'awaiting_paypal_pedido') {
       const paypal = text;
