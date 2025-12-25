@@ -32,31 +32,60 @@ const userPhotos = {}; // Almacenar fotos temporalmente
 // ========== FUNCIONES DE GOOGLE SHEETS ==========
 async function addToSheet(sheetName, values) {
   try {
-    await sheets.spreadsheets.values.append({
+    console.log(`📝 Intentando escribir en ${sheetName}:`, values);
+    
+    const result = await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
       range: `${sheetName}!A:Z`,
       valueInputOption: 'USER_ENTERED',
       resource: { values: [values] }
     });
+    
+    console.log(`✅ Escrito exitosamente en ${sheetName}`);
     return true;
   } catch (error) {
-    console.error('Error escribiendo en Google Sheets:', error);
+    console.error(`❌ Error escribiendo en Google Sheets (${sheetName}):`, error.message);
+    if (error.response) {
+      console.error('Detalles del error:', error.response.data);
+    }
     return false;
   }
+}
+
+// Función específica para añadir pedido respetando las columnas existentes
+async function addPedido(fecha, numeroPedido, paypal, nick) {
+  // Columnas: FECHA | ARTICULO | IMAGEN | DESCRIPCION | NUMERO | PAYPAL | PERFIL AMZ | REVIEW | NICK | COMISION | ESTADO | VENDEDOR
+  const values = [
+    fecha,           // A: FECHA
+    '',              // B: ARTICULO (vacío)
+    '',              // C: IMAGEN (vacío)
+    '',              // D: DESCRIPCION (vacío)
+    numeroPedido,    // E: NUMERO
+    paypal,          // F: PAYPAL
+    '',              // G: PERFIL AMZ (vacío)
+    '',              // H: REVIEW (vacío)
+    nick,            // I: NICK
+    '',              // J: COMISION (vacío)
+    'Pendiente',     // K: ESTADO
+    ''               // L: VENDEDOR (vacío)
+  ];
+  
+  return await addToSheet('Pedidos', values);
 }
 
 async function findOrderInSheet(numeroPedido) {
   try {
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: SHEET_ID,
-      range: 'Pedidos!A:Z'
+      range: 'Pedidos!A:L'
     });
     
     const rows = response.data.values;
     if (!rows) return null;
     
+    // Buscar en columna E (índice 4) que es NUMERO
     for (let i = 1; i < rows.length; i++) {
-      if (rows[i][2] === numeroPedido) {
+      if (rows[i][4] === numeroPedido) { // Columna E (NUMERO)
         return { row: i + 1, data: rows[i] };
       }
     }
@@ -72,13 +101,25 @@ async function updateOrderInSheet(numeroPedido, reviewLink) {
     const order = await findOrderInSheet(numeroPedido);
     if (!order) return false;
     
-    await sheets.spreadsheets.values.update({
+    // Actualizar columna H (REVIEW) y K (ESTADO)
+    await sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: SHEET_ID,
-      range: `Pedidos!E${order.row}`,
-      valueInputOption: 'USER_ENTERED',
-      resource: { values: [[reviewLink]] }
+      resource: {
+        valueInputOption: 'USER_ENTERED',
+        data: [
+          {
+            range: `Pedidos!H${order.row}`, // Columna H: REVIEW
+            values: [[reviewLink]]
+          },
+          {
+            range: `Pedidos!K${order.row}`, // Columna K: ESTADO
+            values: [['Review Enviado']]
+          }
+        ]
+      }
     });
     
+    console.log(`✅ Review actualizado en fila ${order.row}`);
     return true;
   } catch (error) {
     console.error('Error actualizando Google Sheets:', error);
@@ -336,7 +377,18 @@ bot.on('message', async (msg) => {
             }
           );
         } else {
-          await bot.sendMessage(chatId, '❌ Error al registrar. Intenta de nuevo.');
+          await bot.sendMessage(
+            chatId,
+            '❌ Error al guardar en Google Sheets.\n\n' +
+            'Verifica que la hoja "Usuarios" exista.\n' +
+            'Contacta al administrador si el error persiste.',
+            {
+              reply_markup: {
+                keyboard: [[{ text: '🚀 EMPEZAR 🚀' }]],
+                resize_keyboard: true
+              }
+            }
+          );
         }
         
         delete userStates[chatId];
@@ -369,13 +421,12 @@ bot.on('message', async (msg) => {
         }
         state.data.paypal = text;
         
-        const pedidoExitoso = await addToSheet('Pedidos', [
+        const pedidoExitoso = await addPedido(
           new Date().toLocaleDateString('es-ES'),
-          state.data.username,
           state.data.numeroPedido,
           state.data.paypal,
-          '' // Review link vacío por ahora
-        ]);
+          state.data.username
+        );
         
         if (pedidoExitoso) {
           // ========== RESUMEN PARA COMPARTIR CON SELLER ==========
@@ -535,12 +586,34 @@ app.get('/api/health', (req, res) => {
 });
 
 // ========== INICIAR SERVIDOR ==========
-app.listen(PORT, () => {
-  console.log(`🚀 Servidor en http://localhost:${PORT}`);
-  console.log('🤖 Bot activo en modo polling');
-  console.log('📊 Google Sheets conectado');
-  console.log('✅ Sistema listo');
-});
+async function startServer() {
+  try {
+    // Verificar conexión con Google Sheets
+    console.log('🔍 Verificando conexión con Google Sheets...');
+    const authClient = await auth.getClient();
+    console.log('✅ Autenticación con Google exitosa');
+    
+    // Verificar que el spreadsheet existe
+    const spreadsheet = await sheets.spreadsheets.get({
+      spreadsheetId: SHEET_ID,
+      auth: authClient
+    });
+    console.log(`✅ Google Sheet encontrado: "${spreadsheet.data.properties.title}"`);
+    
+    app.listen(PORT, () => {
+      console.log(`🚀 Servidor en http://localhost:${PORT}`);
+      console.log('🤖 Bot activo en modo polling');
+      console.log('📊 Google Sheets conectado');
+      console.log('✅ Sistema listo');
+    });
+  } catch (error) {
+    console.error('❌ Error al iniciar:', error.message);
+    console.error('Verifica tus variables de entorno de Google Sheets');
+    process.exit(1);
+  }
+}
+
+startServer();
 
 // Manejo de errores
 process.on('uncaughtException', (error) => {
