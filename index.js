@@ -263,9 +263,13 @@ bot.on('callback_query', async (query) => {
 async function mostrarReviewsPendientes(chatId) {
   try {
     const sheet = doc.sheetsByIndex[1];
-    const rows = await sheet.getRows();
+    await sheet.loadRows(); // Cargar todas las filas
+    const rows = sheet.rowCount > 1 ? await sheet.getRows() : [];
     
-    const reviewsPendientes = rows.filter(row => row.get('ESTADO') === 'Review Subida');
+    const reviewsPendientes = rows.filter(row => {
+      const estado = row.get('ESTADO');
+      return estado && estado.trim() === 'Review Subida';
+    });
     
     if (reviewsPendientes.length === 0) {
       bot.sendMessage(chatId, '✅ No hay reviews pendientes de enviar al seller.', {
@@ -280,10 +284,10 @@ async function mostrarReviewsPendientes(chatId) {
     const botones = [];
     
     reviewsPendientes.forEach((row, index) => {
-      const numero = row.get('NUMERO');
-      const review = row.get('REVIEW');
-      const nick = row.get('NICK');
-      const paypal = row.get('PAYPAL');
+      const numero = row.get('NUMERO') || 'N/A';
+      const review = row.get('REVIEW') || 'N/A';
+      const nick = row.get('NICK') || 'N/A';
+      const paypal = row.get('PAYPAL') || 'N/A';
       
       mensaje += `${index + 1}️⃣ *Pedido:* ${numero}\n`;
       mensaje += `   👤 Usuario: ${nick}\n`;
@@ -301,8 +305,8 @@ async function mostrarReviewsPendientes(chatId) {
     });
     
   } catch (error) {
-    bot.sendMessage(chatId, '❌ Error al obtener reviews pendientes.');
-    console.error(error);
+    bot.sendMessage(chatId, '❌ Error al obtener reviews pendientes: ' + error.message);
+    console.error('Error en mostrarReviewsPendientes:', error);
   }
 }
 
@@ -325,7 +329,8 @@ async function marcarReviewEnviada(chatId, numeroPedido) {
     const rowIndex = row.rowNumber;
     await aplicarColorEstado(sheet, rowIndex, 'Review Enviada');
     
-    bot.sendMessage(chatId, `✅ Review del pedido *${numeroPedido}* marcada como enviada al seller.\n\nCambió a color azul celeste.`, {
+    // MENSAJE SOLO PARA ADMIN
+    bot.sendMessage(chatId, `✅ Review del pedido *${numeroPedido}* marcada como enviada al seller.\n\n🔵 Cambió a color azul celeste.`, {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
@@ -607,7 +612,8 @@ bot.on('message', async (msg) => {
         const rowIndex = row.rowNumber;
         await aplicarColorEstado(sheet, rowIndex, 'Review Pagada');
         
-        bot.sendMessage(chatId, `✅ Pedido *${numeroPedido}* marcado como pagado.\n\nCambió a color azul oscuro.`, {
+        // MENSAJE SOLO PARA ADMIN
+        bot.sendMessage(chatId, `✅ Pedido *${numeroPedido}* marcado como pagado.\n\n🔵 Cambió a color azul oscuro.`, {
           parse_mode: 'Markdown',
           reply_markup: {
             inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
