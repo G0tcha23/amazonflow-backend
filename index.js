@@ -39,21 +39,31 @@ async function initSheet() {
   try {
     await doc.loadInfo();
     console.log('✅ Autenticación con Google exitosa');
+    console.log('📊 Documento:', doc.title);
     
     const sheet = doc.sheetsByIndex[1];
     if (!sheet) {
       throw new Error('No se encuentra la Hoja 2 (Pedidos)');
     }
     
+    console.log('📄 Hoja 2 encontrada:', sheet.title);
     await sheet.loadHeaderRow();
-    console.log('✅ Conexión verificada correctamente');
+    console.log('✅ Encabezados:', sheet.headerValues);
     
+    // Formatear encabezados
     await formatearEncabezados();
-    await crearHojasVendedores();
+    
+    // Solo crear hojas de vendedores si hay vendedores configurados
+    if (VENDEDORES.length > 0) {
+      await crearHojasVendedores();
+    } else {
+      console.log('ℹ️ No hay vendedores configurados (array vacío)');
+    }
     
     console.log('🤖 Bot iniciado exitosamente');
   } catch (error) {
     console.error('❌ Error al iniciar:', error.message);
+    console.error('Stack:', error.stack);
     console.error('Verifica tus variables de entorno de Google Sheets');
     process.exit(1);
   }
@@ -491,60 +501,70 @@ bot.on('message', async (msg) => {
     } else if (state.step === 'awaiting_paypal_pedido') {
       const paypal = text;
       
-      // Obtener perfil del registro
-      const sheetRegistro = doc.sheetsByIndex[0];
-      const rowsRegistro = await sheetRegistro.getRows();
-      const userRegistro = rowsRegistro.find(r => r.get('PAYPAL') === paypal);
-      const perfilAmz = userRegistro ? userRegistro.get('PERFIL') : 'N/A';
-      
-      // Guardar en Hoja 2
-      const sheetPedidos = doc.sheetsByIndex[1];
-      await sheetPedidos.addRow({
-        FECHA: new Date().toLocaleDateString('es-ES'),
-        ARTICULO: '',
-        IMAGEN: state.imagenUrl,
-        DESCRIPCION: '',
-        NUMERO: state.numeroPedido,
-        PAYPAL: paypal,
-        'PERFIL AMZ': perfilAmz,
-        REVIEW: '',
-        NICK: msg.from.username || msg.from.first_name,
-        COMISION: '',
-        ESTADO: 'Pendiente',
-        VENDEDOR: ''
-      });
-      
-      // Enviar imagen usando el file_id (funciona con todos los formatos)
       try {
-        if (state.tipoImagen === 'photo' || state.tipoImagen === 'document') {
-          await bot.sendPhoto(chatId, state.fileId, {
-            caption: '✅ Imagen guardada correctamente',
-            reply_markup: removerTeclado()
-          });
-        } else if (state.tipoImagen === 'sticker') {
-          await bot.sendMessage(chatId, '✅ Imagen guardada correctamente', {
-            reply_markup: removerTeclado()
-          });
+        // Obtener perfil del registro
+        const sheetRegistro = doc.sheetsByIndex[0];
+        const rowsRegistro = await sheetRegistro.getRows();
+        const userRegistro = rowsRegistro.find(r => r.get('PAYPAL') === paypal);
+        const perfilAmz = userRegistro ? userRegistro.get('PERFIL') : 'N/A';
+        
+        // Guardar en Hoja 2
+        const sheetPedidos = doc.sheetsByIndex[1];
+        const nuevaFila = await sheetPedidos.addRow({
+          FECHA: new Date().toLocaleDateString('es-ES'),
+          ARTICULO: '',
+          IMAGEN: state.imagenUrl,
+          DESCRIPCION: '',
+          NUMERO: state.numeroPedido,
+          PAYPAL: paypal,
+          'PERFIL AMZ': perfilAmz,
+          REVIEW: '',
+          NICK: msg.from.username || msg.from.first_name,
+          COMISION: '',
+          ESTADO: 'Pendiente',
+          VENDEDOR: ''
+        });
+        
+        console.log('✅ Pedido guardado en Hoja 2:', state.numeroPedido);
+        
+        // Enviar imagen usando el file_id (funciona con todos los formatos)
+        try {
+          if (state.tipoImagen === 'photo' || state.tipoImagen === 'document') {
+            await bot.sendPhoto(chatId, state.fileId, {
+              caption: '✅ Imagen guardada correctamente',
+              reply_markup: removerTeclado()
+            });
+          } else if (state.tipoImagen === 'sticker') {
+            await bot.sendMessage(chatId, '✅ Imagen guardada correctamente', {
+              reply_markup: removerTeclado()
+            });
+          }
+        } catch (error) {
+          console.log('Error al reenviar imagen (no crítico):', error.message);
         }
+        
+        // Luego el resumen
+        const resumen = `📦 *PEDIDO REGISTRADO*\n\n` +
+          `🔢 Número: ${state.numeroPedido}\n` +
+          `💰 PayPal: ${paypal}\n` +
+          `📸 Imagen: Guardada\n\n` +
+          `✅ Pedido guardado correctamente`;
+        
+        bot.sendMessage(chatId, resumen, {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+          }
+        });
+        
+        limpiarEstadoUsuario(chatId);
+        
       } catch (error) {
-        console.log('Error al reenviar imagen (no crítico):', error.message);
+        console.error('❌ Error al guardar pedido:', error);
+        bot.sendMessage(chatId, '❌ Error al guardar el pedido. Por favor intenta de nuevo.', {
+          reply_markup: getBotonesControl()
+        });
       }
-      
-      // Luego el resumen
-      const resumen = `📦 *PEDIDO REGISTRADO*\n\n` +
-        `🔢 Número: ${state.numeroPedido}\n` +
-        `💰 PayPal: ${paypal}\n` +
-        `📸 Imagen: Guardada\n\n` +
-        `✅ Pedido guardado correctamente`;
-      
-      bot.sendMessage(chatId, resumen, {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
-        }
-      });
-      
-      limpiarEstadoUsuario(chatId);
       
     // SUBIR REVIEW
     } else if (state.step === 'awaiting_review_link') {
