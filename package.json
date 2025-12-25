@@ -1,6 +1,7 @@
 {
   "name": "amazonflow-bot-server",
-  "version": "1.0.0",
+  "version": "3.0.0",
+  "description": "AmazonFlow Telegram Bot with Google Sheets",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -9,7 +10,8 @@
     "dotenv": "^16.0.3",
     "node-telegram-bot-api": "^0.61.0",
     "googleapis": "^118.0.0",
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
   },
   "engines": {
     "node": "18.x"
