@@ -40,7 +40,7 @@ async function initSheet() {
     await doc.loadInfo();
     console.log('✅ Autenticación con Google exitosa');
     
-    const sheet = doc.sheetsByIndex[1]; // Hoja 2 (Pedidos)
+    const sheet = doc.sheetsByIndex[1];
     if (!sheet) {
       throw new Error('No se encuentra la Hoja 2 (Pedidos)');
     }
@@ -48,10 +48,7 @@ async function initSheet() {
     await sheet.loadHeaderRow();
     console.log('✅ Conexión verificada correctamente');
     
-    // Formatear encabezados
     await formatearEncabezados();
-    
-    // Crear hojas de vendedores
     await crearHojasVendedores();
     
     console.log('🤖 Bot iniciado exitosamente');
@@ -100,16 +97,16 @@ async function crearHojasVendedores() {
 async function aplicarColorEstado(sheet, rowIndex, estado) {
   await sheet.loadCells(`A${rowIndex}:L${rowIndex}`);
   
-  let color = { red: 1, green: 1, blue: 1 }; // Blanco por defecto
-  let textColor = { red: 0, green: 0, blue: 0 }; // Negro por defecto
+  let color = { red: 1, green: 1, blue: 1 };
+  let textColor = { red: 0, green: 0, blue: 0 };
   
   if (estado === 'Review Subida') {
-    color = { red: 1, green: 0.647, blue: 0 }; // Naranja
+    color = { red: 1, green: 0.647, blue: 0 };
   } else if (estado === 'Review Enviada') {
-    color = { red: 0.682, green: 0.851, blue: 0.902 }; // Azul celeste
+    color = { red: 0.682, green: 0.851, blue: 0.902 };
   } else if (estado === 'Review Pagada') {
-    color = { red: 0.259, green: 0.522, blue: 0.957 }; // Azul oscuro
-    textColor = { red: 1, green: 1, blue: 1 }; // Texto blanco
+    color = { red: 0.259, green: 0.522, blue: 0.957 };
+    textColor = { red: 1, green: 1, blue: 1 };
   }
   
   for (let i = 0; i < 12; i++) {
@@ -132,19 +129,33 @@ function limpiarEstadoUsuario(chatId) {
 
 // Establecer timeout para estado
 function establecerTimeout(chatId) {
-  // Limpiar timeout anterior si existe
   if (userTimeouts[chatId]) {
     clearTimeout(userTimeouts[chatId]);
   }
   
-  // Crear nuevo timeout de 5 minutos
   userTimeouts[chatId] = setTimeout(() => {
     if (userStates[chatId]) {
       delete userStates[chatId];
       bot.sendMessage(chatId, '⏱️ Sesión expirada por inactividad.\n\nUsa /start para comenzar de nuevo.');
     }
     delete userTimeouts[chatId];
-  }, 5 * 60 * 1000); // 5 minutos
+  }, 5 * 60 * 1000);
+}
+
+// Botones de control (CANCELAR y MENÚ)
+function getBotonesControl() {
+  return {
+    keyboard: [
+      [{ text: '❌ CANCELAR' }, { text: '🏠 MENÚ PRINCIPAL' }]
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: false
+  };
+}
+
+// Remover teclado personalizado
+function removerTeclado() {
+  return { remove_keyboard: true };
 }
 
 // Menú principal
@@ -163,7 +174,10 @@ function mostrarMenuPrincipal(chatId, esAdmin = false) {
   }
   
   bot.sendMessage(chatId, '¡Hola! 👋\n\nBienvenido al bot de gestión de pedidos de Amazon.\n\nSelecciona una opción:', {
-    reply_markup: { inline_keyboard: opciones }
+    reply_markup: { 
+      inline_keyboard: opciones,
+      remove_keyboard: true
+    }
   });
 }
 
@@ -172,7 +186,6 @@ bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   const esAdmin = ADMIN_CHAT_IDS.includes(chatId);
   
-  // Limpiar cualquier estado anterior
   limpiarEstadoUsuario(chatId);
   
   if (esAdmin) {
@@ -186,7 +199,9 @@ bot.onText(/\/start/, (msg) => {
 bot.onText(/\/cancelar/, (msg) => {
   const chatId = msg.chat.id;
   limpiarEstadoUsuario(chatId);
-  bot.sendMessage(chatId, '❌ Operación cancelada.\n\nUsa /start para comenzar de nuevo.');
+  bot.sendMessage(chatId, '❌ Operación cancelada.\n\nUsa /start para comenzar de nuevo.', {
+    reply_markup: removerTeclado()
+  });
 });
 
 // Manejador de callbacks
@@ -201,19 +216,28 @@ bot.on('callback_query', async (query) => {
     limpiarEstadoUsuario(chatId);
     userStates[chatId] = { step: 'awaiting_perfil_amazon' };
     establecerTimeout(chatId);
-    bot.sendMessage(chatId, '📝 *REGISTRO*\n\nEnvía tu perfil de Amazon:\n\n_Usa /cancelar para abortar_', { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, '📝 *REGISTRO*\n\nEnvía tu perfil de Amazon:', { 
+      parse_mode: 'Markdown',
+      reply_markup: getBotonesControl()
+    });
     
   } else if (data === 'hacer_pedido') {
     limpiarEstadoUsuario(chatId);
     userStates[chatId] = { step: 'awaiting_numero_pedido' };
     establecerTimeout(chatId);
-    bot.sendMessage(chatId, '🛍️ *NUEVO PEDIDO*\n\nEnvía el número de pedido:\n\n_Usa /cancelar para abortar_', { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, '🛍️ *NUEVO PEDIDO*\n\nEnvía el número de pedido:', { 
+      parse_mode: 'Markdown',
+      reply_markup: getBotonesControl()
+    });
     
   } else if (data === 'subir_review') {
     limpiarEstadoUsuario(chatId);
     userStates[chatId] = { step: 'awaiting_review_link' };
     establecerTimeout(chatId);
-    bot.sendMessage(chatId, '⭐ *SUBIR REVIEW*\n\nEnvía el link de tu review:\n\n_Usa /cancelar para abortar_', { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, '⭐ *SUBIR REVIEW*\n\nEnvía el link de tu review:', { 
+      parse_mode: 'Markdown',
+      reply_markup: getBotonesControl()
+    });
     
   } else if (data === 'reviews_pendientes' && esAdmin) {
     await mostrarReviewsPendientes(chatId);
@@ -222,7 +246,10 @@ bot.on('callback_query', async (query) => {
     limpiarEstadoUsuario(chatId);
     userStates[chatId] = { step: 'awaiting_numero_pagar' };
     establecerTimeout(chatId);
-    bot.sendMessage(chatId, '💰 *MARCAR COMO PAGADO*\n\nEnvía el número de pedido:\n\n_Usa /cancelar para abortar_', { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, '💰 *MARCAR COMO PAGADO*\n\nEnvía el número de pedido:', { 
+      parse_mode: 'Markdown',
+      reply_markup: getBotonesControl()
+    });
     
   } else if (data.startsWith('enviar_review_')) {
     const numeroPedido = data.replace('enviar_review_', '');
@@ -343,6 +370,23 @@ bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
   const state = userStates[chatId];
+  const esAdmin = ADMIN_CHAT_IDS.includes(chatId);
+  
+  // Manejar botones de control
+  if (text === '❌ CANCELAR') {
+    limpiarEstadoUsuario(chatId);
+    bot.sendMessage(chatId, '❌ Operación cancelada.', {
+      reply_markup: removerTeclado()
+    });
+    setTimeout(() => mostrarMenuPrincipal(chatId, esAdmin), 500);
+    return;
+  }
+  
+  if (text === '🏠 MENÚ PRINCIPAL') {
+    limpiarEstadoUsuario(chatId);
+    mostrarMenuPrincipal(chatId, esAdmin);
+    return;
+  }
   
   // Ignorar comandos
   if (text && (text === '/start' || text === '/cancelar')) return;
@@ -357,17 +401,20 @@ bot.on('message', async (msg) => {
     if (state.step === 'awaiting_perfil_amazon') {
       state.perfilAmazon = text;
       state.step = 'awaiting_paypal_registro';
-      bot.sendMessage(chatId, '💰 Ahora envía tu PayPal:');
+      bot.sendMessage(chatId, '💰 Ahora envía tu PayPal:', {
+        reply_markup: getBotonesControl()
+      });
       
     } else if (state.step === 'awaiting_paypal_registro') {
       state.paypal = text;
       state.step = 'awaiting_intermediarios';
-      bot.sendMessage(chatId, '🤝 Envía 2-3 intermediarios con los que trabajas:');
+      bot.sendMessage(chatId, '🤝 Envía 2-3 intermediarios con los que trabajas:', {
+        reply_markup: getBotonesControl()
+      });
       
     } else if (state.step === 'awaiting_intermediarios') {
       const intermediarios = text;
       
-      // Guardar en Hoja 1
       const sheetRegistro = doc.sheetsByIndex[0];
       await sheetRegistro.addRow({
         FECHA: new Date().toLocaleDateString('es-ES'),
@@ -389,27 +436,55 @@ bot.on('message', async (msg) => {
     } else if (state.step === 'awaiting_numero_pedido') {
       state.numeroPedido = text;
       state.step = 'awaiting_captura';
-      bot.sendMessage(chatId, '📸 Envía la captura del pedido:');
+      bot.sendMessage(chatId, '📸 Envía la captura del pedido:', {
+        reply_markup: getBotonesControl()
+      });
       
     } else if (state.step === 'awaiting_captura') {
       let fileId = null;
+      let imagenUrl = null;
+      let tipoImagen = null;
       
-      // Aceptar foto comprimida
+      // 1. Aceptar fotos comprimidas (más común en móviles)
       if (msg.photo) {
         fileId = msg.photo[msg.photo.length - 1].file_id;
+        tipoImagen = 'photo';
       }
-      // Aceptar documento/archivo (capturas sin comprimir)
-      else if (msg.document && msg.document.mime_type && msg.document.mime_type.startsWith('image/')) {
-        fileId = msg.document.file_id;
+      // 2. Aceptar documentos de imagen (capturas, archivos, portapapeles)
+      else if (msg.document) {
+        const mimeType = msg.document.mime_type || '';
+        const fileName = msg.document.file_name || '';
+        
+        // Verificar si es imagen por MIME type o extensión
+        const esImagen = mimeType.startsWith('image/') || 
+                        /\.(jpg|jpeg|png|gif|bmp|webp|heic|heif|tiff)$/i.test(fileName);
+        
+        if (esImagen) {
+          fileId = msg.document.file_id;
+          tipoImagen = 'document';
+        }
+      }
+      // 3. Aceptar stickers (algunos usuarios los usan)
+      else if (msg.sticker) {
+        fileId = msg.sticker.file_id;
+        tipoImagen = 'sticker';
       }
       
       if (fileId) {
-        const fileLink = await bot.getFileLink(fileId);
-        state.imagenUrl = fileLink;
+        // Construir URL correctamente
+        imagenUrl = `https://api.telegram.org/file/bot${token}/${fileId}`;
+        state.imagenUrl = imagenUrl;
+        state.fileId = fileId;
+        state.tipoImagen = tipoImagen;
         state.step = 'awaiting_paypal_pedido';
-        bot.sendMessage(chatId, '💰 Envía tu PayPal:');
+        
+        bot.sendMessage(chatId, `✅ Imagen recibida correctamente\n\n💰 Ahora envía tu PayPal:`, {
+          reply_markup: getBotonesControl()
+        });
       } else {
-        bot.sendMessage(chatId, '⚠️ Por favor envía una imagen válida (foto o captura de pantalla).');
+        bot.sendMessage(chatId, '⚠️ Por favor envía una imagen válida.\n\n📌 Puedes:\n• Copiar y pegar desde portapapeles\n• Enviar una foto\n• Adjuntar un archivo\n• Hacer captura de pantalla', {
+          reply_markup: getBotonesControl()
+        });
       }
       
     } else if (state.step === 'awaiting_paypal_pedido') {
@@ -438,16 +513,27 @@ bot.on('message', async (msg) => {
         VENDEDOR: ''
       });
       
-      // Enviar imagen primero
-      await bot.sendPhoto(chatId, state.imagenUrl, {
-        caption: '📸 Haz clic derecho → Copiar imagen (para WeChat)'
-      });
+      // Enviar imagen usando el file_id (funciona con todos los formatos)
+      try {
+        if (state.tipoImagen === 'photo' || state.tipoImagen === 'document') {
+          await bot.sendPhoto(chatId, state.fileId, {
+            caption: '✅ Imagen guardada correctamente',
+            reply_markup: removerTeclado()
+          });
+        } else if (state.tipoImagen === 'sticker') {
+          await bot.sendMessage(chatId, '✅ Imagen guardada correctamente', {
+            reply_markup: removerTeclado()
+          });
+        }
+      } catch (error) {
+        console.log('Error al reenviar imagen (no crítico):', error.message);
+      }
       
       // Luego el resumen
       const resumen = `📦 *PEDIDO REGISTRADO*\n\n` +
         `🔢 Número: ${state.numeroPedido}\n` +
         `💰 PayPal: ${paypal}\n` +
-        `📸 Imagen: Enviada arriba\n\n` +
+        `📸 Imagen: Guardada\n\n` +
         `✅ Pedido guardado correctamente`;
       
       bot.sendMessage(chatId, resumen, {
@@ -463,17 +549,20 @@ bot.on('message', async (msg) => {
     } else if (state.step === 'awaiting_review_link') {
       state.reviewLink = text;
       state.step = 'awaiting_numero_review';
-      bot.sendMessage(chatId, '🔢 Envía el número de pedido:');
+      bot.sendMessage(chatId, '🔢 Envía el número de pedido:', {
+        reply_markup: getBotonesControl()
+      });
       
     } else if (state.step === 'awaiting_numero_review') {
       state.numeroPedido = text;
       state.step = 'awaiting_paypal_review';
-      bot.sendMessage(chatId, '💰 Envía tu PayPal:');
+      bot.sendMessage(chatId, '💰 Envía tu PayPal:', {
+        reply_markup: getBotonesControl()
+      });
       
     } else if (state.step === 'awaiting_paypal_review') {
       const paypal = text;
       
-      // Actualizar en Hoja 2
       const sheet = doc.sheetsByIndex[1];
       const rows = await sheet.getRows();
       const row = rows.find(r => r.get('NUMERO') === state.numeroPedido && r.get('PAYPAL') === paypal);
@@ -492,7 +581,6 @@ bot.on('message', async (msg) => {
           }
         });
         
-        // Notificar a los admins
         await notificarNuevaReview({
           numero: state.numeroPedido,
           review: state.reviewLink,
@@ -501,7 +589,9 @@ bot.on('message', async (msg) => {
         });
         
       } else {
-        bot.sendMessage(chatId, '❌ No se encontró el pedido. Verifica el número y PayPal.');
+        bot.sendMessage(chatId, '❌ No se encontró el pedido. Verifica el número y PayPal.', {
+          reply_markup: getBotonesControl()
+        });
       }
       
       limpiarEstadoUsuario(chatId);
@@ -521,10 +611,6 @@ bot.on('message', async (msg) => {
         const rowIndex = row.rowNumber;
         await aplicarColorEstado(sheet, rowIndex, 'Review Pagada');
         
-        // Notificar al comprador
-        const nick = row.get('NICK');
-        const paypal = row.get('PAYPAL');
-        
         bot.sendMessage(chatId, `✅ Pedido *${numeroPedido}* marcado como pagado.\n\nCambió a color azul oscuro.`, {
           parse_mode: 'Markdown',
           reply_markup: {
@@ -533,14 +619,18 @@ bot.on('message', async (msg) => {
         });
         
       } else {
-        bot.sendMessage(chatId, '❌ No se encontró el pedido.');
+        bot.sendMessage(chatId, '❌ No se encontró el pedido.', {
+          reply_markup: getBotonesControl()
+        });
       }
       
       limpiarEstadoUsuario(chatId);
     }
     
   } catch (error) {
-    bot.sendMessage(chatId, '❌ Error al procesar tu solicitud.\n\nUsa /start para comenzar de nuevo.');
+    bot.sendMessage(chatId, '❌ Error al procesar tu solicitud.\n\nUsa /start para comenzar de nuevo.', {
+      reply_markup: removerTeclado()
+    });
     console.error('Error en manejador:', error);
     limpiarEstadoUsuario(chatId);
   }
