@@ -19,6 +19,14 @@ const PORT = process.env.PORT || 10000;
 // IDs de administradores
 const ADMIN_CHAT_IDS = [8167109];
 
+// Lista de vendedores (añade o modifica según necesites)
+const VENDEDORES = [
+  'VendedorA',
+  'VendedorB', 
+  'VendedorC',
+  'VendedorD'
+];
+
 // Configurar Google Sheets API
 const auth = new google.auth.GoogleAuth({
   credentials: {
@@ -147,6 +155,88 @@ async function formatearHoja() {
   }
 }
 
+// Función para configurar lista desplegable de vendedores en columna L
+async function configurarListaVendedores() {
+  try {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      resource: {
+        requests: [{
+          setDataValidation: {
+            range: {
+              sheetId: SHEET_PEDIDOS_ID,
+              startRowIndex: 1, // Desde fila 2 (después del encabezado)
+              endRowIndex: 1000,
+              startColumnIndex: 11, // Columna L (VENDEDOR)
+              endColumnIndex: 12
+            },
+            rule: {
+              condition: {
+                type: 'ONE_OF_LIST',
+                values: VENDEDORES.map(v => ({ userEnteredValue: v }))
+              },
+              showCustomUi: true,
+              strict: true
+            }
+          }
+        }]
+      }
+    });
+    console.log('📋 Lista desplegable de vendedores configurada');
+  } catch (error) {
+    console.error('⚠️ No se pudo configurar lista de vendedores:', error.message);
+  }
+}
+
+// Función para crear hojas automáticas por vendedor
+async function crearHojasVendedores() {
+  try {
+    const info = await sheets.spreadsheets.get({
+      spreadsheetId: GOOGLE_SHEET_ID
+    });
+    
+    const hojasExistentes = info.data.sheets.map(s => s.properties.title);
+    
+    for (const vendedor of VENDEDORES) {
+      if (!hojasExistentes.includes(vendedor)) {
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: GOOGLE_SHEET_ID,
+          resource: {
+            requests: [{
+              addSheet: {
+                properties: {
+                  title: vendedor,
+                  gridProperties: {
+                    frozenRowCount: 1
+                  }
+                }
+              }
+            }]
+          }
+        });
+        
+        // Añadir encabezados a la nueva hoja
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: GOOGLE_SHEET_ID,
+          range: `${vendedor}!A1:L1`,
+          valueInputOption: 'USER_ENTERED',
+          resource: {
+            values: [[
+              'FECHA', 'ARTICULO', 'IMAGEN', 'DESCRIPCION', 'NUMERO', 
+              'PAYPAL', 'PERFIL AMZ', 'REVIEW', 'NICK', 'COMISION', 
+              'ESTADO', 'VENDEDOR'
+            ]]
+          }
+        });
+        
+        console.log(`📄 Hoja creada: ${vendedor}`);
+      }
+    }
+  } catch (error) {
+    console.error('⚠️ No se pudieron crear hojas de vendedores:', error.message);
+  }
+}
+
 // Función para aplicar colores a las filas DE LA HOJA DE PEDIDOS
 async function applyColor(rowIndex, color) {
   try {
@@ -204,7 +294,20 @@ async function addRegistro(fecha, usuario, perfilAmazon, paypal, intermediarios)
   }
 }
 
-// Función para añadir PEDIDO a la Hoja 2
+// Función para copiar pedidos a la hoja del vendedor
+async function copiarPedidoAVendedor(vendedor, rowData) {
+  try {
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: `${vendedor}!A:L`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [rowData] }
+    });
+    console.log(`✅ Pedido copiado a hoja de ${vendedor}`);
+  } catch (error) {
+    console.error(`❌ Error al copiar pedido a ${vendedor}:`, error.message);
+  }
+}
 async function addPedido(fecha, usuario, numeroPedido, paypal, perfilAmazon, imageUrl) {
   try {
     const values = [[
@@ -420,24 +523,29 @@ bot.on('message', (msg) => {
   else if (state.action === 'pedido' && state.step === 'numero') {
     userStates[chatId] = { ...state, step: 'captura', numero: text };
     bot.sendMessage(chatId, '📸 Envía la captura de pantalla del pedido:');
-  } else if (state.action === 'pedido' && state.step === 'paypal') {
+  }   else if (state.action === 'pedido' && state.step === 'paypal') {
     const fecha = new Date().toLocaleDateString('es-ES');
     const usuario = msg.from.username || msg.from.first_name;
     const { numero, imageUrl, perfil } = state;
 
     addPedido(fecha, usuario, numero, text, perfil, imageUrl).then(success => {
       if (success) {
-        // Enviar resumen con imagen
         const resumen = `📦 PEDIDO REGISTRADO\n\n🔢 Número: ${numero}\n💳 PayPal: ${text}\n👤 Usuario: ${usuario}\n📅 Fecha: ${fecha}`;
         
         if (imageUrl) {
+          // Enviar la imagen primero (para que puedas copiarla fácilmente)
           bot.sendPhoto(chatId, imageUrl, {
-            caption: resumen + '\n\n✅ Pedido guardado'
+            caption: '📸 CAPTURA DEL PEDIDO\n(Haz clic derecho → Copiar imagen para pegar en WeChat)'
           }).then(() => {
-            bot.sendMessage(chatId, '📋 Menú principal:', getMainKeyboard(chatId));
+            // Luego enviar el resumen de texto
+            bot.sendMessage(chatId, resumen).then(() => {
+              bot.sendMessage(chatId, '✅ Pedido registrado correctamente', getMainKeyboard(chatId));
+            });
           });
         } else {
-          bot.sendMessage(chatId, resumen + '\n\n✅ Pedido guardado', getMainKeyboard(chatId));
+          bot.sendMessage(chatId, resumen).then(() => {
+            bot.sendMessage(chatId, '✅ Pedido registrado correctamente', getMainKeyboard(chatId));
+          });
         }
       } else {
         bot.sendMessage(chatId, '❌ Error al guardar. Intenta de nuevo.', getMainKeyboard(chatId));
