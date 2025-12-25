@@ -203,8 +203,6 @@ bot.onText(/\/cancelar/, (msg) => {
     reply_markup: removerTeclado()
   });
 });
-
-// Manejador de callbacks
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
   const data = query.data;
@@ -372,6 +370,9 @@ bot.on('message', async (msg) => {
   const state = userStates[chatId];
   const esAdmin = ADMIN_CHAT_IDS.includes(chatId);
   
+  // Ignorar comandos (ya se manejan con onText)
+  if (text && text.startsWith('/')) return;
+  
   // Manejar botones de control
   if (text === '❌ CANCELAR') {
     limpiarEstadoUsuario(chatId);
@@ -387,9 +388,6 @@ bot.on('message', async (msg) => {
     mostrarMenuPrincipal(chatId, esAdmin);
     return;
   }
-  
-  // Ignorar comandos
-  if (text && (text === '/start' || text === '/cancelar')) return;
   
   if (!state) return;
   
