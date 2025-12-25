@@ -14,7 +14,7 @@ const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
 // Configurar Express
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 // IDs de administradores (reemplaza con tu Chat ID)
 const ADMIN_CHAT_IDS = [123456789]; // 👈 CAMBIA ESTO con tu Chat ID
@@ -30,12 +30,13 @@ const auth = new google.auth.GoogleAuth({
 
 const sheets = google.sheets({ version: 'v4', auth });
 
-let HOJA_NAME = ''; // Se configurará automáticamente
+let HOJA_NAME = '';
+let SHEET_ID = 0; // ID numérico de la hoja para aplicar formatos
 
 // Estado de usuarios
 const userStates = {};
 
-// Verificar conexión al iniciar
+// Verificar conexión al iniciar y formatear hoja
 (async () => {
   try {
     console.log('🔍 Verificando conexión con Google Sheets...');
@@ -48,12 +49,14 @@ const userStates = {};
       spreadsheetId: GOOGLE_SHEET_ID
     });
     
-    const hojasDisponibles = info.data.sheets.map(s => s.properties.title);
-    console.log('📊 Hojas encontradas:', hojasDisponibles.join(', '));
+    const hojasDisponibles = info.data.sheets;
+    HOJA_NAME = hojasDisponibles[0].properties.title;
+    SHEET_ID = hojasDisponibles[0].properties.sheetId;
     
-    // Usar la primera hoja disponible
-    HOJA_NAME = hojasDisponibles[0];
-    console.log(`✅ Usando hoja: "${HOJA_NAME}"`);
+    console.log(`✅ Usando hoja: "${HOJA_NAME}" (ID: ${SHEET_ID})`);
+    
+    // Aplicar formato bonito a la hoja
+    await formatearHoja();
     
     console.log('🤖 Bot iniciado exitosamente');
     console.log('👤 Para obtener tu Chat ID, envía /start al bot');
@@ -64,6 +67,75 @@ const userStates = {};
   }
 })();
 
+// Función para formatear la hoja de forma bonita
+async function formatearHoja() {
+  try {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      resource: {
+        requests: [
+          // Formato de encabezados (fila 1)
+          {
+            repeatCell: {
+              range: {
+                sheetId: SHEET_ID,
+                startRowIndex: 0,
+                endRowIndex: 1
+              },
+              cell: {
+                userEnteredFormat: {
+                  backgroundColor: { red: 0.2, green: 0.3, blue: 0.5 },
+                  textFormat: {
+                    foregroundColor: { red: 1, green: 1, blue: 1 },
+                    fontSize: 11,
+                    bold: true
+                  },
+                  horizontalAlignment: 'CENTER',
+                  verticalAlignment: 'MIDDLE'
+                }
+              },
+              fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)'
+            }
+          },
+          // Bordes en toda la tabla
+          {
+            updateBorders: {
+              range: {
+                sheetId: SHEET_ID,
+                startRowIndex: 0,
+                endRowIndex: 1000,
+                startColumnIndex: 0,
+                endColumnIndex: 12
+              },
+              top: { style: 'SOLID', width: 1, color: { red: 0.8, green: 0.8, blue: 0.8 } },
+              bottom: { style: 'SOLID', width: 1, color: { red: 0.8, green: 0.8, blue: 0.8 } },
+              left: { style: 'SOLID', width: 1, color: { red: 0.8, green: 0.8, blue: 0.8 } },
+              right: { style: 'SOLID', width: 1, color: { red: 0.8, green: 0.8, blue: 0.8 } },
+              innerHorizontal: { style: 'SOLID', width: 1, color: { red: 0.9, green: 0.9, blue: 0.9 } },
+              innerVertical: { style: 'SOLID', width: 1, color: { red: 0.9, green: 0.9, blue: 0.9 } }
+            }
+          },
+          // Congelar primera fila
+          {
+            updateSheetProperties: {
+              properties: {
+                sheetId: SHEET_ID,
+                gridProperties: {
+                  frozenRowCount: 1
+                }
+              },
+              fields: 'gridProperties.frozenRowCount'
+            }
+          }
+        ]
+      }
+    });
+    console.log('✨ Formato bonito aplicado a la hoja');
+  } catch (error) {
+    console.error('⚠️ No se pudo aplicar formato:', error.message);
+  }
+}
+
 // Función para aplicar colores a las filas
 async function applyColor(rowIndex, color) {
   try {
@@ -73,9 +145,11 @@ async function applyColor(rowIndex, color) {
         requests: [{
           repeatCell: {
             range: {
-              sheetId: 0,
+              sheetId: SHEET_ID,
               startRowIndex: rowIndex - 1,
               endRowIndex: rowIndex,
+              startColumnIndex: 0,
+              endColumnIndex: 12
             },
             cell: {
               userEnteredFormat: {
@@ -87,27 +161,28 @@ async function applyColor(rowIndex, color) {
         }]
       }
     });
+    console.log(`✅ Color aplicado a fila ${rowIndex}`);
   } catch (error) {
     console.error('❌ Error al aplicar color:', error.message);
   }
 }
 
-// Función para añadir pedido a Google Sheets (se adapta a CUALQUIER estructura)
-async function addPedido(fecha, usuario, numeroPedido, paypal) {
+// Función para añadir pedido a Google Sheets
+async function addPedido(fecha, usuario, numeroPedido, paypal, perfilAmazon, imageUrl) {
   try {
     const values = [[
-      fecha,           // Columna A: FECHA
-      '',              // Columna B: ARTICULO (vacío)
-      '',              // Columna C: IMAGEN (vacío)
-      '',              // Columna D: DESCRIPCION (vacío)
-      numeroPedido,    // Columna E: NUMERO
-      paypal,          // Columna F: PAYPAL
-      '',              // Columna G: PERFIL AMZ (vacío)
-      '',              // Columna H: REVIEW (vacío)
-      usuario,         // Columna I: NICK
-      '',              // Columna J: COMISION (vacío)
-      'Pendiente',     // Columna K: ESTADO
-      ''               // Columna L: VENDEDOR (vacío)
+      fecha,           // A: FECHA
+      '',              // B: ARTICULO (vacío)
+      imageUrl || '',  // C: IMAGEN (URL de la imagen de Telegram)
+      '',              // D: DESCRIPCION (vacío)
+      numeroPedido,    // E: NUMERO
+      paypal,          // F: PAYPAL
+      perfilAmazon || '', // G: PERFIL AMZ
+      '',              // H: REVIEW (vacío)
+      usuario,         // I: NICK
+      '',              // J: COMISION (vacío)
+      'Pendiente',     // K: ESTADO
+      ''               // L: VENDEDOR (vacío)
     ]];
 
     await sheets.spreadsheets.values.append({
@@ -156,7 +231,7 @@ async function updateReview(numeroPedido, reviewLink) {
       resource: { values: [[reviewLink]] }
     });
 
-    // Actualizar columna K (ESTADO) y aplicar color azul celeste
+    // Actualizar columna K (ESTADO)
     await sheets.spreadsheets.values.update({
       spreadsheetId: GOOGLE_SHEET_ID,
       range: `${HOJA_NAME}!K${rowIndex}`,
@@ -165,7 +240,7 @@ async function updateReview(numeroPedido, reviewLink) {
     });
 
     // Aplicar color azul celeste
-    await applyColor(rowIndex, { red: 0.7, green: 0.9, blue: 1 });
+    await applyColor(rowIndex, { red: 0.68, green: 0.85, blue: 0.9 });
 
     console.log('✅ Review actualizada con color azul celeste');
     return true;
@@ -207,7 +282,7 @@ async function markAsPaid(numeroPedido) {
     });
 
     // Aplicar color azul oscuro
-    await applyColor(rowIndex, { red: 0, green: 0.4, blue: 0.8 });
+    await applyColor(rowIndex, { red: 0.26, green: 0.52, blue: 0.96 });
 
     console.log('✅ Pedido marcado como pagado con color azul oscuro');
     return true;
@@ -297,12 +372,22 @@ bot.on('message', (msg) => {
   } else if (state.action === 'pedido' && state.step === 'paypal') {
     const fecha = new Date().toLocaleDateString('es-ES');
     const usuario = msg.from.username || msg.from.first_name;
-    const { numero } = state;
+    const { numero, imageUrl, perfil } = state;
 
-    addPedido(fecha, usuario, numero, text).then(success => {
+    addPedido(fecha, usuario, numero, text, perfil, imageUrl).then(success => {
       if (success) {
+        // Enviar resumen con imagen
         const resumen = `📦 PEDIDO REGISTRADO\n\n🔢 Número: ${numero}\n💳 PayPal: ${text}\n👤 Usuario: ${usuario}\n📅 Fecha: ${fecha}`;
-        bot.sendMessage(chatId, resumen + '\n\n✅ Pedido guardado', getMainKeyboard(chatId));
+        
+        if (imageUrl) {
+          bot.sendPhoto(chatId, imageUrl, {
+            caption: resumen + '\n\n✅ Pedido guardado'
+          }).then(() => {
+            bot.sendMessage(chatId, '📋 Menú principal:', getMainKeyboard(chatId));
+          });
+        } else {
+          bot.sendMessage(chatId, resumen + '\n\n✅ Pedido guardado', getMainKeyboard(chatId));
+        }
       } else {
         bot.sendMessage(chatId, '❌ Error al guardar. Intenta de nuevo.', getMainKeyboard(chatId));
       }
@@ -348,7 +433,7 @@ bot.on('message', (msg) => {
 });
 
 // Manejar fotos
-bot.on('photo', (msg) => {
+bot.on('photo', async (msg) => {
   const chatId = msg.chat.id;
   const state = userStates[chatId];
 
@@ -367,8 +452,20 @@ bot.on('photo', (msg) => {
 
   // Si es un pedido en proceso esperando captura
   if (state && state.action === 'pedido' && state.step === 'captura') {
-    userStates[chatId] = { ...state, step: 'paypal' };
-    bot.sendMessage(chatId, '💳 Envía tu PayPal:');
+    try {
+      // Obtener el file_id de la foto más grande
+      const photo = msg.photo[msg.photo.length - 1];
+      const fileId = photo.file_id;
+      
+      // Obtener el link de la foto
+      const fileLink = await bot.getFileLink(fileId);
+      
+      userStates[chatId] = { ...state, step: 'paypal', imageUrl: fileLink };
+      bot.sendMessage(chatId, '✅ Captura guardada!\n\n💳 Ahora envía tu PayPal:');
+    } catch (error) {
+      console.error('Error al obtener imagen:', error);
+      bot.sendMessage(chatId, '❌ Error al guardar la imagen. Envía tu PayPal:', getMainKeyboard(chatId));
+    }
   } else {
     bot.sendMessage(chatId, '❌ No estoy esperando ninguna foto ahora.', getMainKeyboard(chatId));
   }
