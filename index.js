@@ -16,8 +16,8 @@ const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// IDs de administradores (reemplaza con tu Chat ID)
-const ADMIN_CHAT_IDS = [123456789]; // 👈 CAMBIA ESTO con tu Chat ID
+// IDs de administradores
+const ADMIN_CHAT_IDS = [8167109];
 
 // Configurar Google Sheets API
 const auth = new google.auth.GoogleAuth({
@@ -59,7 +59,6 @@ const userStates = {};
     await formatearHoja();
     
     console.log('🤖 Bot iniciado exitosamente');
-    console.log('👤 Para obtener tu Chat ID, envía /start al bot');
   } catch (error) {
     console.error('❌ Error al iniciar:', error.message);
     console.error('Verifica tus variables de entorno de Google Sheets');
@@ -317,12 +316,15 @@ function getMainKeyboard(chatId) {
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   const username = msg.from.username || msg.from.first_name;
+  const isAdmin = ADMIN_CHAT_IDS.includes(chatId);
   
-  console.log(`👤 Chat ID del usuario: ${chatId}`);
+  if (isAdmin) {
+    console.log(`👑 Admin conectado - Chat ID: ${chatId}`);
+  }
   
   bot.sendMessage(
     chatId,
-    `¡Hola ${username}! 👋\n\nBienvenido al bot de gestión de pedidos de Amazon.\n\n📌 Tu Chat ID es: ${chatId}\n\nSelecciona una opción:`,
+    `¡Hola ${username}! 👋\n\nBienvenido al bot de gestión de pedidos de Amazon.\n\nSelecciona una opción:`,
     getMainKeyboard(chatId)
   );
 });
