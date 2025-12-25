@@ -13,12 +13,12 @@ const PORT = process.env.PORT || 10000;
 // IDs de administradores
 const ADMIN_CHAT_IDS = [8167109];
 
-// Lista de vendedores
+// Lista de vendedores (configura aquí tus vendedores reales)
 const VENDEDORES = [
-  'Liu Wei',
-  'Chen Ming', 
-  'Wang Fang',
-  'Zhang Hua'
+  // Ejemplos (elimina y añade los tuyos):
+  // 'Vendedor1',
+  // 'Vendedor2',
+  // 'Vendedor3'
 ];
 
 // Autenticación Google Sheets
@@ -367,13 +367,9 @@ async function notificarNuevaReview(datosReview) {
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
-  const state = userStates[chatId];
   const esAdmin = ADMIN_CHAT_IDS.includes(chatId);
   
-  // Ignorar comandos (ya se manejan con onText)
-  if (text && text.startsWith('/')) return;
-  
-  // Manejar botones de control
+  // Manejar botones de control PRIMERO (antes de cualquier verificación)
   if (text === '❌ CANCELAR') {
     limpiarEstadoUsuario(chatId);
     bot.sendMessage(chatId, '❌ Operación cancelada.', {
@@ -388,6 +384,8 @@ bot.on('message', async (msg) => {
     mostrarMenuPrincipal(chatId, esAdmin);
     return;
   }
+  
+  const state = userStates[chatId];
   
   if (!state) return;
   
