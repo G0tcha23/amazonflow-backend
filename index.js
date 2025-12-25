@@ -1,156 +1,81 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
-const cors = require('cors');
 const { google } = require('googleapis');
 
-const token = process.env.TELEGRAM_TOKEN;
+// Variables de entorno
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
+const GOOGLE_CLIENT_EMAIL = process.env.GOOGLE_CLIENT_EMAIL;
+const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n');
+
+// Configurar bot
+const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
+
+// Configurar Express
 const app = express();
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 3000;
 
-app.use(cors());
-app.use(express.json());
+// IDs de administradores (reemplaza con tu Chat ID)
+const ADMIN_CHAT_IDS = [123456789]; // 👈 CAMBIA ESTO con tu Chat ID
 
-// ========== CONFIGURACIÓN DE GOOGLE SHEETS ==========
+// Configurar Google Sheets API
 const auth = new google.auth.GoogleAuth({
   credentials: {
-    client_email: process.env.GOOGLE_CLIENT_EMAIL,
-    private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n')
+    client_email: GOOGLE_CLIENT_EMAIL,
+    private_key: GOOGLE_PRIVATE_KEY,
   },
-  scopes: ['https://www.googleapis.com/auth/spreadsheets']
+  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
 const sheets = google.sheets({ version: 'v4', auth });
-const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 
-const bot = new TelegramBot(token, { polling: true });
+let HOJA_NAME = ''; // Se configurará automáticamente
 
-// Estados de usuario en memoria
+// Estado de usuarios
 const userStates = {};
-const userPhotos = {}; // Almacenar fotos temporalmente
 
-// ID del admin (tu chat ID de Telegram)
-// Para obtenerlo, envía /start al bot y mira los logs
-const ADMIN_CHAT_IDS = []; // Añade tu chat ID aquí cuando lo sepas
-
-// Función para verificar si un usuario es admin
-function isAdmin(chatId) {
-  return ADMIN_CHAT_IDS.includes(chatId) || ADMIN_CHAT_IDS.length === 0; // Si está vacío, todos son admin
-}
-
-// ========== FUNCIONES DE GOOGLE SHEETS ==========
-async function addToSheet(sheetName, values) {
+// Verificar conexión al iniciar
+(async () => {
   try {
-    console.log(`📝 Intentando escribir en ${sheetName}:`, values);
+    console.log('🔍 Verificando conexión con Google Sheets...');
     
-    const result = await sheets.spreadsheets.values.append({
-      spreadsheetId: SHEET_ID,
-      range: `${sheetName}!A:Z`,
-      valueInputOption: 'USER_ENTERED',
-      resource: { values: [values] }
+    const authClient = await auth.getClient();
+    console.log('✅ Autenticación con Google exitosa');
+    
+    // Obtener información del spreadsheet
+    const info = await sheets.spreadsheets.get({
+      spreadsheetId: GOOGLE_SHEET_ID
     });
     
-    console.log(`✅ Escrito exitosamente en ${sheetName}`);
-    return true;
+    const hojasDisponibles = info.data.sheets.map(s => s.properties.title);
+    console.log('📊 Hojas encontradas:', hojasDisponibles.join(', '));
+    
+    // Usar la primera hoja disponible
+    HOJA_NAME = hojasDisponibles[0];
+    console.log(`✅ Usando hoja: "${HOJA_NAME}"`);
+    
+    console.log('🤖 Bot iniciado exitosamente');
+    console.log('👤 Para obtener tu Chat ID, envía /start al bot');
   } catch (error) {
-    console.error(`❌ Error escribiendo en Google Sheets (${sheetName}):`, error.message);
-    if (error.response) {
-      console.error('Detalles del error:', error.response.data);
-    }
-    return false;
+    console.error('❌ Error al iniciar:', error.message);
+    console.error('Verifica tus variables de entorno de Google Sheets');
+    process.exit(1);
   }
-}
+})();
 
-// Función específica para añadir pedido respetando las columnas existentes
-async function addPedido(fecha, numeroPedido, paypal, nick) {
-  // Columnas: FECHA | ARTICULO | IMAGEN | DESCRIPCION | NUMERO | PAYPAL | PERFIL AMZ | REVIEW | NICK | COMISION | ESTADO | VENDEDOR
-  const values = [
-    fecha,           // A: FECHA
-    '',              // B: ARTICULO (vacío)
-    '',              // C: IMAGEN (vacío)
-    '',              // D: DESCRIPCION (vacío)
-    numeroPedido,    // E: NUMERO
-    paypal,          // F: PAYPAL
-    '',              // G: PERFIL AMZ (vacío)
-    '',              // H: REVIEW (vacío)
-    nick,            // I: NICK
-    '',              // J: COMISION (vacío)
-    'Pendiente',     // K: ESTADO
-    ''               // L: VENDEDOR (vacío)
-  ];
-  
-  return await addToSheet('Pedidos', values);
-}
-
-async function findOrderInSheet(numeroPedido) {
-  try {
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: SHEET_ID,
-      range: 'Pedidos!A:L'
-    });
-    
-    const rows = response.data.values;
-    if (!rows) return null;
-    
-    // Buscar en columna E (índice 4) que es NUMERO
-    for (let i = 1; i < rows.length; i++) {
-      if (rows[i][4] === numeroPedido) { // Columna E (NUMERO)
-        return { row: i + 1, data: rows[i] };
-      }
-    }
-    return null;
-  } catch (error) {
-    console.error('Error buscando en Google Sheets:', error);
-    return null;
-  }
-}
-
-async function updateOrderInSheet(numeroPedido, reviewLink) {
-  try {
-    const order = await findOrderInSheet(numeroPedido);
-    if (!order) return false;
-    
-    // Actualizar columna H (REVIEW) y K (ESTADO)
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: SHEET_ID,
-      resource: {
-        valueInputOption: 'USER_ENTERED',
-        data: [
-          {
-            range: `Pedidos!H${order.row}`, // Columna H: REVIEW
-            values: [[reviewLink]]
-          },
-          {
-            range: `Pedidos!K${order.row}`, // Columna K: ESTADO
-            values: [['Review Enviada']]
-          }
-        ]
-      }
-    });
-    
-    // Aplicar color azul celeste a la fila
-    await applyRowColor(order.row, { red: 0.8, green: 0.9, blue: 1 }); // Azul celeste
-    
-    console.log(`✅ Review actualizado en fila ${order.row}`);
-    return true;
-  } catch (error) {
-    console.error('Error actualizando Google Sheets:', error);
-    return false;
-  }
-}
-
-// Función para aplicar color a una fila
-async function applyRowColor(rowNumber, color) {
+// Función para aplicar colores a las filas
+async function applyColor(rowIndex, color) {
   try {
     await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: SHEET_ID,
+      spreadsheetId: GOOGLE_SHEET_ID,
       resource: {
         requests: [{
           repeatCell: {
             range: {
-              sheetId: await getSheetId('Pedidos'),
-              startRowIndex: rowNumber - 1,
-              endRowIndex: rowNumber
+              sheetId: 0,
+              startRowIndex: rowIndex - 1,
+              endRowIndex: rowIndex,
             },
             cell: {
               userEnteredFormat: {
@@ -163,677 +88,325 @@ async function applyRowColor(rowNumber, color) {
       }
     });
   } catch (error) {
-    console.error('Error aplicando color:', error);
+    console.error('❌ Error al aplicar color:', error.message);
   }
 }
 
-// Función para obtener el ID de una hoja
-async function getSheetId(sheetName) {
+// Función para añadir pedido a Google Sheets (se adapta a CUALQUIER estructura)
+async function addPedido(fecha, usuario, numeroPedido, paypal) {
   try {
-    const spreadsheet = await sheets.spreadsheets.get({
-      spreadsheetId: SHEET_ID
+    const values = [[
+      fecha,           // Columna A: FECHA
+      '',              // Columna B: ARTICULO (vacío)
+      '',              // Columna C: IMAGEN (vacío)
+      '',              // Columna D: DESCRIPCION (vacío)
+      numeroPedido,    // Columna E: NUMERO
+      paypal,          // Columna F: PAYPAL
+      '',              // Columna G: PERFIL AMZ (vacío)
+      '',              // Columna H: REVIEW (vacío)
+      usuario,         // Columna I: NICK
+      '',              // Columna J: COMISION (vacío)
+      'Pendiente',     // Columna K: ESTADO
+      ''               // Columna L: VENDEDOR (vacío)
+    ]];
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: `${HOJA_NAME}!A:L`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values }
     });
-    
-    const sheet = spreadsheet.data.sheets.find(s => s.properties.title === sheetName);
-    return sheet ? sheet.properties.sheetId : 0;
+
+    console.log('✅ Pedido añadido al sheet');
+    return true;
   } catch (error) {
-    console.error('Error obteniendo sheet ID:', error);
-    return 0;
+    console.error('❌ Error al añadir pedido:', error.message);
+    return false;
   }
 }
 
-// Función para obtener el chat ID del usuario a partir del número de pedido
-async function getChatIdFromOrder(numeroPedido) {
+// Función para buscar pedido y actualizar review
+async function updateReview(numeroPedido, reviewLink) {
   try {
     const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: SHEET_ID,
-      range: 'Pedidos!A:L'
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: `${HOJA_NAME}!A:L`
     });
-    
-    const rows = response.data.values;
-    if (!rows) return null;
-    
-    // Buscar el pedido y obtener el nick de columna I
-    for (let i = 1; i < rows.length; i++) {
-      if (rows[i][4] === numeroPedido) { // Columna E (NUMERO)
-        const nick = rows[i][8]; // Columna I (NICK)
-        return { nick, row: i + 1 };
+
+    const rows = response.data.values || [];
+    let rowIndex = -1;
+
+    // Buscar el pedido en la columna E (NUMERO)
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i][4] === numeroPedido) {
+        rowIndex = i + 1;
+        break;
       }
     }
-    return null;
+
+    if (rowIndex === -1) {
+      return false;
+    }
+
+    // Actualizar columna H (REVIEW)
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: `${HOJA_NAME}!H${rowIndex}`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [[reviewLink]] }
+    });
+
+    // Actualizar columna K (ESTADO) y aplicar color azul celeste
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: `${HOJA_NAME}!K${rowIndex}`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [['Review Enviada']] }
+    });
+
+    // Aplicar color azul celeste
+    await applyColor(rowIndex, { red: 0.7, green: 0.9, blue: 1 });
+
+    console.log('✅ Review actualizada con color azul celeste');
+    return true;
   } catch (error) {
-    console.error('Error obteniendo chat ID:', error);
-    return null;
+    console.error('❌ Error al actualizar review:', error.message);
+    return false;
   }
 }
 
-// Función para notificar reembolso pagado
-async function notifyRefundPaid(numeroPedido) {
+// Función para actualizar estado como "Review Pagada" (ADMIN)
+async function markAsPaid(numeroPedido) {
   try {
-    const orderInfo = await getChatIdFromOrder(numeroPedido);
-    if (!orderInfo) {
-      return { success: false, error: 'Pedido no encontrado' };
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: `${HOJA_NAME}!A:L`
+    });
+
+    const rows = response.data.values || [];
+    let rowIndex = -1;
+
+    // Buscar el pedido en la columna E (NUMERO)
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i][4] === numeroPedido) {
+        rowIndex = i + 1;
+        break;
+      }
     }
-    
-    // Actualizar estado a "Review Pagada" y aplicar color azul oscuro
+
+    if (rowIndex === -1) {
+      return false;
+    }
+
+    // Actualizar columna K (ESTADO)
     await sheets.spreadsheets.values.update({
-      spreadsheetId: SHEET_ID,
-      range: `Pedidos!K${orderInfo.row}`,
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: `${HOJA_NAME}!K${rowIndex}`,
       valueInputOption: 'USER_ENTERED',
       resource: { values: [['Review Pagada']] }
     });
-    
+
     // Aplicar color azul oscuro
-    await applyRowColor(orderInfo.row, { red: 0.2, green: 0.4, blue: 0.8 });
-    
-    console.log(`✅ Estado actualizado a "Review Pagada" para pedido ${numeroPedido}`);
-    
-    return { 
-      success: true, 
-      nick: orderInfo.nick,
-      message: `✅ Pedido ${numeroPedido} marcado como pagado`
-    };
+    await applyColor(rowIndex, { red: 0, green: 0.4, blue: 0.8 });
+
+    console.log('✅ Pedido marcado como pagado con color azul oscuro');
+    return true;
   } catch (error) {
-    console.error('Error notificando reembolso:', error);
-    return { success: false, error: error.message };
+    console.error('❌ Error al marcar como pagado:', error.message);
+    return false;
   }
 }
 
-// ========== VALIDACIONES ==========
-function isValidEmail(email) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-function isValidOrderId(orderId) {
-  return /^\d{3}-\d{7}-\d{7}$/.test(orderId);
-}
-
-function isValidAmazonUrl(url) {
-  return url.includes('amazon.com') || url.includes('amazon.es') || 
-         url.includes('/review/') || url.includes('/product-reviews/');
-}
-
-// ========== COMANDO /START Y MENSAJES ==========
-bot.onText(/\/start/, async (msg) => {
-  const chatId = msg.chat.id;
-  const username = msg.from.username ? '@' + msg.from.username : msg.from.first_name;
+// Teclado principal
+function getMainKeyboard(chatId) {
+  const isAdmin = ADMIN_CHAT_IDS.includes(chatId);
   
-  console.log(`👤 Usuario conectado - Chat ID: ${chatId}, Username: ${username}`);
+  const keyboard = [
+    [{ text: '📝 REGISTRARSE', callback_data: 'registrarse' }],
+    [{ text: '🛍️ HACER PEDIDO', callback_data: 'hacer_pedido' }],
+    [{ text: '⭐ SUBIR REVIEW', callback_data: 'subir_review' }]
+  ];
   
-  await bot.sendMessage(
-    chatId,
-    `🎯 *¡Bienvenido a AmazonFlow!* 🎯\n\n` +
-    `Hola ${username}, presiona el botón para comenzar 👇\n\n` +
-    `_Tu Chat ID: ${chatId}_`,
-    {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        keyboard: [
-          [{ text: '🚀 EMPEZAR 🚀' }]
-        ],
-        resize_keyboard: true
-      }
+  if (isAdmin) {
+    keyboard.push([{ text: '💰 MARCAR PAGADO', callback_data: 'marcar_pagado' }]);
+  }
+  
+  return {
+    reply_markup: {
+      inline_keyboard: keyboard
     }
+  };
+}
+
+// Comando /start
+bot.onText(/\/start/, (msg) => {
+  const chatId = msg.chat.id;
+  const username = msg.from.username || msg.from.first_name;
+  
+  console.log(`👤 Chat ID del usuario: ${chatId}`);
+  
+  bot.sendMessage(
+    chatId,
+    `¡Hola ${username}! 👋\n\nBienvenido al bot de gestión de pedidos de Amazon.\n\n📌 Tu Chat ID es: ${chatId}\n\nSelecciona una opción:`,
+    getMainKeyboard(chatId)
   );
 });
 
-// ========== MANEJO DE FOTOS ==========
-bot.on('photo', async (msg) => {
-  const chatId = msg.chat.id;
-  const state = userStates[chatId];
-  const caption = msg.caption ? msg.caption.trim() : '';
-
-  // ADMIN: Envía captura con número de pedido para marcar como pagado
-  if (isAdmin(chatId) && caption && isValidOrderId(caption)) {
-    const result = await notifyRefundPaid(caption);
-    
-    if (result.success) {
-      await bot.sendMessage(
-        chatId,
-        `✅ *¡REEMBOLSO MARCADO COMO PAGADO!*\n\n` +
-        `🆔 Pedido: \`${caption}\`\n` +
-        `👤 Usuario: ${result.nick}\n` +
-        `🎨 Color: Azul oscuro aplicado\n` +
-        `📊 Estado: Review Pagada`,
-        { parse_mode: 'Markdown' }
-      );
-    } else {
-      await bot.sendMessage(chatId, `❌ Error: ${result.error}`);
-    }
-    return;
-  }
-
-  // Usuario normal enviando captura de pedido
-  if (!state || state.step !== 'awaiting_screenshot') {
-    return;
-  }
-
-  try {
-    const photo = msg.photo[msg.photo.length - 1];
-    const fileId = photo.file_id;
-    const file = await bot.getFile(fileId);
-    const capturaUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
-    
-    state.data.capturaUrl = capturaUrl;
-    state.data.fileId = fileId;
-    state.step = 'awaiting_paypal_pedido';
-    
-    await bot.sendMessage(
-      chatId,
-      `✅ *Captura recibida*\n\n` +
-      `💰 Ahora envía tu correo de *PayPal*:`,
-      { parse_mode: 'Markdown' }
-    );
-  } catch (error) {
-    console.error('Error procesando captura:', error);
-    await bot.sendMessage(chatId, '❌ Error procesando la captura. Intenta de nuevo.');
-  }
-});
-
-// ========== MANEJO DE MENSAJES ==========
-bot.on('message', async (msg) => {
+// Manejar mensajes de texto
+bot.on('message', (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
-  const username = msg.from.username ? '@' + msg.from.username : msg.from.first_name;
 
-  if (!text || text.startsWith('/')) return;
+  // Ignorar comandos
+  if (text && text.startsWith('/')) return;
 
   const state = userStates[chatId];
 
-  // ========== BOTÓN EMPEZAR ==========
-  if (text === '🚀 EMPEZAR 🚀') {
-    const keyboard = [
-      [{ text: '👤 REGISTRARSE' }],
-      [{ text: '🛍️ HACER PEDIDO' }],
-      [{ text: '⭐ SUBIR REVIEW' }]
-    ];
-    
-    // Si es admin, añadir opción de marcar como pagado
-    if (isAdmin(chatId)) {
-      keyboard.push([{ text: '💰 MARCAR PAGADO' }]);
-    }
-    
-    keyboard.push([{ text: '❌ Cancelar' }]);
-    
-    await bot.sendMessage(
-      chatId,
-      `📋 *MENÚ PRINCIPAL*\n\n` +
-      `Selecciona una opción:`,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          keyboard: keyboard,
-          resize_keyboard: true
-        }
-      }
-    );
-    return;
-  }
-
-  // ========== CANCELAR ==========
-  if (text === '❌ Cancelar') {
-    delete userStates[chatId];
-    delete userPhotos[chatId];
-    await bot.sendMessage(
-      chatId,
-      '❌ Operación cancelada',
-      {
-        reply_markup: {
-          keyboard: [[{ text: '🚀 EMPEZAR 🚀' }]],
-          resize_keyboard: true
-        }
-      }
-    );
-    return;
-  }
-
-  // ========== REGISTRARSE ==========
-  if (text === '👤 REGISTRARSE') {
-    userStates[chatId] = { 
-      step: 'awaiting_amazon_profile', 
-      data: { username } 
-    };
-    
-    await bot.sendMessage(
-      chatId,
-      `📝 *REGISTRO*\n\n` +
-      `Por favor, envía tu *perfil de Amazon*:\n` +
-      `(Puede ser el link a tu perfil o tu nombre de usuario)`,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          keyboard: [[{ text: '❌ Cancelar' }]],
-          resize_keyboard: true
-        }
-      }
-    );
-    return;
-  }
-
-  // ========== HACER PEDIDO ==========
-  if (text === '🛍️ HACER PEDIDO') {
-    userStates[chatId] = { 
-      step: 'awaiting_numero_pedido', 
-      data: { username } 
-    };
-    
-    await bot.sendMessage(
-      chatId,
-      `📦 *NUEVO PEDIDO*\n\n` +
-      `Envía el *número de pedido* de Amazon:\n\n` +
-      `Formato: \`111-2233445-6677889\``,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          keyboard: [[{ text: '❌ Cancelar' }]],
-          resize_keyboard: true
-        }
-      }
-    );
-    return;
-  }
-
-  // ========== SUBIR REVIEW ==========
-  if (text === '⭐ SUBIR REVIEW') {
-    userStates[chatId] = { 
-      step: 'awaiting_review_link', 
-      data: { username } 
-    };
-    
-    await bot.sendMessage(
-      chatId,
-      `⭐ *SUBIR REVIEW*\n\n` +
-      `Envía el *link de tu review* en Amazon:`,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          keyboard: [[{ text: '❌ Cancelar' }]],
-          resize_keyboard: true
-        }
-      }
-    );
-    return;
-  }
-
-  // ========== MARCAR COMO PAGADO (SOLO ADMIN) ==========
-  if (text === '💰 MARCAR PAGADO' && isAdmin(chatId)) {
-    userStates[chatId] = { 
-      step: 'awaiting_refund_numero', 
-      data: { isAdmin: true } 
-    };
-    
-    await bot.sendMessage(
-      chatId,
-      `💰 *MARCAR REEMBOLSO COMO PAGADO*\n\n` +
-      `Envía el *número de pedido* que ya pagaste:\n\n` +
-      `Formato: \`111-2233445-6677889\``,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          keyboard: [[{ text: '❌ Cancelar' }]],
-          resize_keyboard: true
-        }
-      }
-    );
-    return;
-  }
-
-  // ========== MANEJO DE ESTADOS ==========
   if (!state) {
-    await bot.sendMessage(
+    // Mostrar botón EMPEZAR si no hay estado
+    bot.sendMessage(
       chatId,
-      `👋 Hola, presiona el botón para comenzar:`,
+      '👋 ¡Hola! Para comenzar, pulsa el botón:',
       {
         reply_markup: {
-          keyboard: [[{ text: '🚀 EMPEZAR 🚀' }]],
-          resize_keyboard: true
+          inline_keyboard: [[
+            { text: '🚀 EMPEZAR 🚀', callback_data: 'start' }
+          ]]
         }
       }
     );
     return;
   }
 
-  try {
-    switch (state.step) {
-      // ========== FLUJO DE REGISTRO ==========
-      case 'awaiting_amazon_profile':
-        state.data.amazonProfile = text;
-        state.step = 'awaiting_paypal_registro';
-        await bot.sendMessage(
-          chatId,
-          `💰 Ahora envía tu *correo de PayPal*:`,
-          { parse_mode: 'Markdown' }
-        );
-        break;
+  // FLUJO REGISTRO
+  if (state.action === 'registro' && state.step === 'perfil') {
+    userStates[chatId] = { ...state, step: 'paypal', perfil: text };
+    bot.sendMessage(chatId, '💳 Envía tu correo de PayPal:');
+  } else if (state.action === 'registro' && state.step === 'paypal') {
+    userStates[chatId] = { ...state, step: 'intermediarios', paypal: text };
+    bot.sendMessage(chatId, '👥 Envía 2 o 3 intermediarios (nombres o nicks):');
+  } else if (state.action === 'registro' && state.step === 'intermediarios') {
+    bot.sendMessage(chatId, '✅ ¡REGISTRO COMPLETADO! Ya puedes hacer pedidos 🛍️', getMainKeyboard(chatId));
+    delete userStates[chatId];
+  }
 
-      case 'awaiting_paypal_registro':
-        if (!isValidEmail(text)) {
-          await bot.sendMessage(chatId, '❌ Email inválido. Envía un email válido:');
-          return;
-        }
-        state.data.paypal = text;
-        state.step = 'awaiting_intermediarios';
-        await bot.sendMessage(
-          chatId,
-          `👥 Envía 2 o 3 *intermediarios* (nombres o nicks):`,
-          { parse_mode: 'Markdown' }
-        );
-        break;
+  // FLUJO HACER PEDIDO
+  else if (state.action === 'pedido' && state.step === 'numero') {
+    userStates[chatId] = { ...state, step: 'captura', numero: text };
+    bot.sendMessage(chatId, '📸 Envía la captura de pantalla del pedido:');
+  } else if (state.action === 'pedido' && state.step === 'paypal') {
+    const fecha = new Date().toLocaleDateString('es-ES');
+    const usuario = msg.from.username || msg.from.first_name;
+    const { numero } = state;
 
-      case 'awaiting_intermediarios':
-        state.data.intermediarios = text.trim();
-        
-        const registroExitoso = await addToSheet('Usuarios', [
-          new Date().toLocaleDateString('es-ES'),
-          state.data.username,
-          state.data.amazonProfile,
-          state.data.paypal,
-          state.data.intermediarios
-        ]);
-        
-        if (registroExitoso) {
-          await bot.sendMessage(
-            chatId,
-            `✅ *¡REGISTRO COMPLETADO!*\n\n` +
-            `Ya puedes hacer pedidos 🛍️`,
-            {
-              parse_mode: 'Markdown',
-              reply_markup: {
-                keyboard: [[{ text: '🚀 EMPEZAR 🚀' }]],
-                resize_keyboard: true
-              }
-            }
-          );
-        } else {
-          await bot.sendMessage(
-            chatId,
-            '❌ Error al guardar en Google Sheets.\n\n' +
-            'Verifica que la hoja "Usuarios" exista.\n' +
-            'Contacta al administrador si el error persiste.',
-            {
-              reply_markup: {
-                keyboard: [[{ text: '🚀 EMPEZAR 🚀' }]],
-                resize_keyboard: true
-              }
-            }
-          );
-        }
-        
-        delete userStates[chatId];
-        break;
-
-      // ========== FLUJO DE PEDIDO ==========
-      case 'awaiting_numero_pedido':
-        if (!isValidOrderId(text)) {
-          await bot.sendMessage(
-            chatId,
-            '❌ Número de pedido inválido.\n\n' +
-            'Formato correcto: `111-2233445-6677889`',
-            { parse_mode: 'Markdown' }
-          );
-          return;
-        }
-        state.data.numeroPedido = text;
-        state.step = 'awaiting_screenshot';
-        await bot.sendMessage(
-          chatId,
-          `📸 Perfecto. Ahora envía una *captura de pantalla* del pedido:`,
-          { parse_mode: 'Markdown' }
-        );
-        break;
-
-      case 'awaiting_paypal_pedido':
-        if (!isValidEmail(text)) {
-          await bot.sendMessage(chatId, '❌ Email inválido. Envía un email válido:');
-          return;
-        }
-        state.data.paypal = text;
-        
-        const pedidoExitoso = await addPedido(
-          new Date().toLocaleDateString('es-ES'),
-          state.data.numeroPedido,
-          state.data.paypal,
-          state.data.username
-        );
-        
-        if (pedidoExitoso) {
-          // ========== RESUMEN PARA COMPARTIR CON SELLER ==========
-          const resumenSeller = 
-            `📦 *NUEVO PEDIDO*\n\n` +
-            `📅 Fecha: ${new Date().toLocaleDateString('es-ES')}\n` +
-            `👤 Usuario: ${state.data.username}\n` +
-            `🆔 Pedido: \`${state.data.numeroPedido}\`\n` +
-            `💰 PayPal: ${state.data.paypal}\n` +
-            `📸 Captura: ${state.data.capturaUrl}`;
-          
-          await bot.sendMessage(
-            chatId,
-            `✅ *¡PEDIDO REGISTRADO!*\n\n` +
-            `📋 Copia esto para el seller:\n` +
-            `━━━━━━━━━━━━━\n` +
-            resumenSeller + `\n` +
-            `━━━━━━━━━━━━━\n\n` +
-            `Recuerda subir tu review después 🌟`,
-            {
-              parse_mode: 'Markdown',
-              reply_markup: {
-                keyboard: [[{ text: '🚀 EMPEZAR 🚀' }]],
-                resize_keyboard: true
-              }
-            }
-          );
-        } else {
-          await bot.sendMessage(chatId, '❌ Error al registrar el pedido. Intenta de nuevo.');
-        }
-        
-        delete userStates[chatId];
-        break;
-
-      // ========== FLUJO DE REVIEW ==========
-      case 'awaiting_review_link':
-        if (!isValidAmazonUrl(text)) {
-          await bot.sendMessage(chatId, '❌ Link inválido. Debe ser un link de Amazon:');
-          return;
-        }
-        
-        state.data.reviewLink = text;
-        state.step = 'awaiting_review_numero_pedido';
-        
-        await bot.sendMessage(
-          chatId,
-          `🔢 Ahora envía el *número de pedido* asociado a esta review:\n\n` +
-          `Formato: \`111-2233445-6677889\``,
-          { parse_mode: 'Markdown' }
-        );
-        break;
-
-      case 'awaiting_review_numero_pedido':
-        if (!isValidOrderId(text)) {
-          await bot.sendMessage(
-            chatId,
-            '❌ Número de pedido inválido.\n\n' +
-            'Formato correcto: `111-2233445-6677889`',
-            { parse_mode: 'Markdown' }
-          );
-          return;
-        }
-        
-        state.data.numeroPedido = text;
-        state.step = 'awaiting_review_paypal';
-        
-        await bot.sendMessage(
-          chatId,
-          `💰 Por último, envía tu correo de *PayPal*:`,
-          { parse_mode: 'Markdown' }
-        );
-        break;
-
-      case 'awaiting_review_paypal':
-        if (!isValidEmail(text)) {
-          await bot.sendMessage(chatId, '❌ Email inválido. Envía un email válido:');
-          return;
-        }
-        
-        state.data.paypal = text;
-        
-        // Actualizar el pedido en Google Sheets con la review
-        const actualizado = await updateOrderInSheet(
-          state.data.numeroPedido, 
-          state.data.reviewLink
-        );
-        
-        if (actualizado) {
-          // ========== RESUMEN PARA COMPARTIR CON SELLER ==========
-          const resumenReview = 
-            `⭐ *REVIEW COMPLETADO*\n\n` +
-            `👤 Usuario: ${state.data.username}\n` +
-            `🆔 Pedido: \`${state.data.numeroPedido}\`\n` +
-            `🔗 Review: ${state.data.reviewLink}\n` +
-            `💰 PayPal: ${state.data.paypal}`;
-          
-          await bot.sendMessage(
-            chatId,
-            `✅ *¡REVIEW REGISTRADO!*\n\n` +
-            `📋 Copia esto para el seller:\n` +
-            `━━━━━━━━━━━━━\n` +
-            resumenReview + `\n` +
-            `━━━━━━━━━━━━━\n\n` +
-            `¡Gracias! Recibirás tu pago pronto 💰`,
-            {
-              parse_mode: 'Markdown',
-              reply_markup: {
-                keyboard: [[{ text: '🚀 EMPEZAR 🚀' }]],
-                resize_keyboard: true
-              }
-            }
-          );
-        } else {
-          await bot.sendMessage(
-            chatId,
-            '⚠️ No se encontró el pedido.\n' +
-            'Verifica el número e intenta de nuevo.',
-            {
-              reply_markup: {
-                keyboard: [[{ text: '🚀 EMPEZAR 🚀' }]],
-                resize_keyboard: true
-              }
-            }
-          );
-        }
-        
-        delete userStates[chatId];
-        break;
-      
-      // ========== FLUJO DE MARCAR COMO PAGADO (ADMIN) ==========
-      case 'awaiting_refund_numero':
-        if (!isValidOrderId(text)) {
-          await bot.sendMessage(
-            chatId,
-            '❌ Número de pedido inválido.\n\n' +
-            'Formato correcto: `111-2233445-6677889`',
-            { parse_mode: 'Markdown' }
-          );
-          return;
-        }
-        
-        const result = await notifyRefundPaid(text);
-        
-        if (result.success) {
-          await bot.sendMessage(
-            chatId,
-            `✅ *¡REEMBOLSO MARCADO COMO PAGADO!*\n\n` +
-            `🆔 Pedido: \`${text}\`\n` +
-            `👤 Usuario: ${result.nick}\n` +
-            `🎨 Color: Azul oscuro aplicado\n` +
-            `📊 Estado: Review Pagada`,
-            {
-              parse_mode: 'Markdown',
-              reply_markup: {
-                keyboard: [[{ text: '🚀 EMPEZAR 🚀' }]],
-                resize_keyboard: true
-              }
-            }
-          );
-        } else {
-          await bot.sendMessage(
-            chatId,
-            `❌ Error: ${result.error}`,
-            {
-              reply_markup: {
-                keyboard: [[{ text: '🚀 EMPEZAR 🚀' }]],
-                resize_keyboard: true
-              }
-            }
-          );
-        }
-        
-        delete userStates[chatId];
-        break;
-    }
-  } catch (error) {
-    console.error('Error procesando mensaje:', error);
-    await bot.sendMessage(
-      chatId,
-      '❌ Error procesando tu solicitud. Intenta de nuevo.',
-      {
-        reply_markup: {
-          keyboard: [[{ text: '🚀 EMPEZAR 🚀' }]],
-          resize_keyboard: true
-        }
+    addPedido(fecha, usuario, numero, text).then(success => {
+      if (success) {
+        const resumen = `📦 PEDIDO REGISTRADO\n\n🔢 Número: ${numero}\n💳 PayPal: ${text}\n👤 Usuario: ${usuario}\n📅 Fecha: ${fecha}`;
+        bot.sendMessage(chatId, resumen + '\n\n✅ Pedido guardado', getMainKeyboard(chatId));
+      } else {
+        bot.sendMessage(chatId, '❌ Error al guardar. Intenta de nuevo.', getMainKeyboard(chatId));
       }
-    );
+    });
+
+    delete userStates[chatId];
+  }
+
+  // FLUJO SUBIR REVIEW
+  else if (state.action === 'review' && state.step === 'link') {
+    userStates[chatId] = { ...state, step: 'numero', link: text };
+    bot.sendMessage(chatId, '🔢 Envía el número de pedido:');
+  } else if (state.action === 'review' && state.step === 'numero') {
+    userStates[chatId] = { ...state, step: 'paypal', numero: text };
+    bot.sendMessage(chatId, '💳 Envía tu PayPal:');
+  } else if (state.action === 'review' && state.step === 'paypal') {
+    const { link, numero } = state;
+
+    updateReview(numero, link).then(success => {
+      if (success) {
+        const resumen = `⭐ REVIEW ENVIADA\n\n🔗 Review: ${link}\n🔢 Pedido: ${numero}\n💳 PayPal: ${text}`;
+        bot.sendMessage(chatId, resumen + '\n\n✅ Review registrada', getMainKeyboard(chatId));
+      } else {
+        bot.sendMessage(chatId, '❌ No se encontró el pedido.', getMainKeyboard(chatId));
+      }
+    });
+
+    delete userStates[chatId];
+  }
+
+  // FLUJO MARCAR COMO PAGADO (ADMIN)
+  else if (state.action === 'marcar_pagado') {
+    markAsPaid(text).then(success => {
+      if (success) {
+        bot.sendMessage(chatId, `✅ Pedido ${text} marcado como PAGADO (azul oscuro)`, getMainKeyboard(chatId));
+      } else {
+        bot.sendMessage(chatId, '❌ No se encontró el pedido.', getMainKeyboard(chatId));
+      }
+    });
+
     delete userStates[chatId];
   }
 });
 
-// ========== API ROUTES ==========
-app.get('/', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    message: 'AmazonFlow Bot Server - Google Sheets',
-    version: '3.0'
-  });
-});
+// Manejar fotos
+bot.on('photo', (msg) => {
+  const chatId = msg.chat.id;
+  const state = userStates[chatId];
 
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-// ========== INICIAR SERVIDOR ==========
-async function startServer() {
-  try {
-    // Verificar conexión con Google Sheets
-    console.log('🔍 Verificando conexión con Google Sheets...');
-    const authClient = await auth.getClient();
-    console.log('✅ Autenticación con Google exitosa');
-    
-    // Verificar que el spreadsheet existe
-    const spreadsheet = await sheets.spreadsheets.get({
-      spreadsheetId: SHEET_ID,
-      auth: authClient
+  // Si es admin enviando captura con número en caption
+  if (ADMIN_CHAT_IDS.includes(chatId) && msg.caption) {
+    const numeroPedido = msg.caption.trim();
+    markAsPaid(numeroPedido).then(success => {
+      if (success) {
+        bot.sendMessage(chatId, `✅ Pedido ${numeroPedido} marcado como PAGADO`, getMainKeyboard(chatId));
+      } else {
+        bot.sendMessage(chatId, '❌ No se encontró el pedido.', getMainKeyboard(chatId));
+      }
     });
-    console.log(`✅ Google Sheet encontrado: "${spreadsheet.data.properties.title}"`);
-    
-    app.listen(PORT, () => {
-      console.log(`🚀 Servidor en http://localhost:${PORT}`);
-      console.log('🤖 Bot activo en modo polling');
-      console.log('📊 Google Sheets conectado');
-      console.log('✅ Sistema listo');
-    });
-  } catch (error) {
-    console.error('❌ Error al iniciar:', error.message);
-    console.error('Verifica tus variables de entorno de Google Sheets');
-    process.exit(1);
+    return;
   }
-}
 
-startServer();
-
-// Manejo de errores
-process.on('uncaughtException', (error) => {
-  console.error('Error no capturado:', error);
+  // Si es un pedido en proceso esperando captura
+  if (state && state.action === 'pedido' && state.step === 'captura') {
+    userStates[chatId] = { ...state, step: 'paypal' };
+    bot.sendMessage(chatId, '💳 Envía tu PayPal:');
+  } else {
+    bot.sendMessage(chatId, '❌ No estoy esperando ninguna foto ahora.', getMainKeyboard(chatId));
+  }
 });
 
-process.on('unhandledRejection', (error) => {
-  console.error('Promesa rechazada:', error);
+// Manejar botones
+bot.on('callback_query', (query) => {
+  const chatId = query.message.chat.id;
+  const data = query.data;
+
+  bot.answerCallbackQuery(query.id);
+
+  if (data === 'start') {
+    bot.sendMessage(chatId, '👋 ¡Perfecto! Selecciona una opción:', getMainKeyboard(chatId));
+  } else if (data === 'registrarse') {
+    userStates[chatId] = { action: 'registro', step: 'perfil' };
+    bot.sendMessage(chatId, '🛒 Envía tu perfil de Amazon:');
+  } else if (data === 'hacer_pedido') {
+    userStates[chatId] = { action: 'pedido', step: 'numero' };
+    bot.sendMessage(chatId, '🔢 Envía el número de pedido:');
+  } else if (data === 'subir_review') {
+    userStates[chatId] = { action: 'review', step: 'link' };
+    bot.sendMessage(chatId, '🔗 Envía el enlace de la review:');
+  } else if (data === 'marcar_pagado') {
+    if (ADMIN_CHAT_IDS.includes(chatId)) {
+      userStates[chatId] = { action: 'marcar_pagado' };
+      bot.sendMessage(chatId, '🔢 Envía el número de pedido a marcar como PAGADO:');
+    } else {
+      bot.sendMessage(chatId, '❌ No tienes permisos para esta acción.');
+    }
+  }
+});
+
+// Iniciar servidor Express
+app.get('/', (req, res) => {
+  res.send('Bot de AmazonFlow está funcionando ✅');
+});
+
+app.listen(PORT, () => {
+  console.log(`🌐 Servidor Express escuchando en puerto ${PORT}`);
 });
