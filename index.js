@@ -30,8 +30,9 @@ const auth = new google.auth.GoogleAuth({
 
 const sheets = google.sheets({ version: 'v4', auth });
 
-let HOJA_NAME = '';
-let SHEET_ID = 0; // ID numérico de la hoja para aplicar formatos
+let HOJA_REGISTRO = ''; // Hoja 1 para registro de usuarios
+let HOJA_PEDIDOS = ''; // Hoja 2 para pedidos
+let SHEET_PEDIDOS_ID = 0; // ID numérico de la hoja de pedidos para aplicar formatos
 
 // Estado de usuarios
 const userStates = {};
@@ -50,10 +51,21 @@ const userStates = {};
     });
     
     const hojasDisponibles = info.data.sheets;
-    HOJA_NAME = hojasDisponibles[0].properties.title;
-    SHEET_ID = hojasDisponibles[0].properties.sheetId;
     
-    console.log(`✅ Usando hoja: "${HOJA_NAME}" (ID: ${SHEET_ID})`);
+    // Configurar ambas hojas
+    if (hojasDisponibles.length >= 2) {
+      HOJA_REGISTRO = hojasDisponibles[0].properties.title; // Primera hoja
+      HOJA_PEDIDOS = hojasDisponibles[1].properties.title; // Segunda hoja
+      SHEET_PEDIDOS_ID = hojasDisponibles[1].properties.sheetId;
+    } else {
+      // Si solo hay una hoja, usar la misma para todo
+      HOJA_REGISTRO = hojasDisponibles[0].properties.title;
+      HOJA_PEDIDOS = hojasDisponibles[0].properties.title;
+      SHEET_PEDIDOS_ID = hojasDisponibles[0].properties.sheetId;
+    }
+    
+    console.log(`✅ Hoja de registro: "${HOJA_REGISTRO}"`);
+    console.log(`✅ Hoja de pedidos: "${HOJA_PEDIDOS}" (ID: ${SHEET_PEDIDOS_ID})`);
     
     // Aplicar formato bonito a la hoja
     await formatearHoja();
@@ -66,18 +78,18 @@ const userStates = {};
   }
 })();
 
-// Función para formatear la hoja de forma bonita
+// Función para formatear la hoja de pedidos de forma bonita
 async function formatearHoja() {
   try {
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId: GOOGLE_SHEET_ID,
       resource: {
         requests: [
-          // Formato de encabezados (fila 1)
+          // Formato de encabezados (fila 1) en HOJA DE PEDIDOS
           {
             repeatCell: {
               range: {
-                sheetId: SHEET_ID,
+                sheetId: SHEET_PEDIDOS_ID,
                 startRowIndex: 0,
                 endRowIndex: 1
               },
@@ -100,7 +112,7 @@ async function formatearHoja() {
           {
             updateBorders: {
               range: {
-                sheetId: SHEET_ID,
+                sheetId: SHEET_PEDIDOS_ID,
                 startRowIndex: 0,
                 endRowIndex: 1000,
                 startColumnIndex: 0,
@@ -118,7 +130,7 @@ async function formatearHoja() {
           {
             updateSheetProperties: {
               properties: {
-                sheetId: SHEET_ID,
+                sheetId: SHEET_PEDIDOS_ID,
                 gridProperties: {
                   frozenRowCount: 1
                 }
@@ -129,13 +141,13 @@ async function formatearHoja() {
         ]
       }
     });
-    console.log('✨ Formato bonito aplicado a la hoja');
+    console.log('✨ Formato bonito aplicado a la hoja de pedidos');
   } catch (error) {
     console.error('⚠️ No se pudo aplicar formato:', error.message);
   }
 }
 
-// Función para aplicar colores a las filas
+// Función para aplicar colores a las filas DE LA HOJA DE PEDIDOS
 async function applyColor(rowIndex, color) {
   try {
     await sheets.spreadsheets.batchUpdate({
@@ -144,7 +156,7 @@ async function applyColor(rowIndex, color) {
         requests: [{
           repeatCell: {
             range: {
-              sheetId: SHEET_ID,
+              sheetId: SHEET_PEDIDOS_ID,
               startRowIndex: rowIndex - 1,
               endRowIndex: rowIndex,
               startColumnIndex: 0,
@@ -160,13 +172,39 @@ async function applyColor(rowIndex, color) {
         }]
       }
     });
-    console.log(`✅ Color aplicado a fila ${rowIndex}`);
+    console.log(`✅ Color aplicado a fila ${rowIndex} en hoja de pedidos`);
   } catch (error) {
     console.error('❌ Error al aplicar color:', error.message);
   }
 }
 
-// Función para añadir pedido a Google Sheets
+// Función para añadir REGISTRO a la Hoja 1
+async function addRegistro(fecha, usuario, perfilAmazon, paypal, intermediarios) {
+  try {
+    const values = [[
+      fecha,           // A: FECHA
+      usuario,         // B: USUARIO
+      perfilAmazon,    // C: PERFIL
+      paypal,          // D: PAYPAL
+      intermediarios   // E: INTERMEDIARIOS
+    ]];
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: `${HOJA_REGISTRO}!A:E`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values }
+    });
+
+    console.log('✅ Registro añadido a Hoja 1');
+    return true;
+  } catch (error) {
+    console.error('❌ Error al añadir registro:', error.message);
+    return false;
+  }
+}
+
+// Función para añadir PEDIDO a la Hoja 2
 async function addPedido(fecha, usuario, numeroPedido, paypal, perfilAmazon, imageUrl) {
   try {
     const values = [[
@@ -186,12 +224,12 @@ async function addPedido(fecha, usuario, numeroPedido, paypal, perfilAmazon, ima
 
     await sheets.spreadsheets.values.append({
       spreadsheetId: GOOGLE_SHEET_ID,
-      range: `${HOJA_NAME}!A:L`,
+      range: `${HOJA_PEDIDOS}!A:L`,
       valueInputOption: 'USER_ENTERED',
       resource: { values }
     });
 
-    console.log('✅ Pedido añadido al sheet');
+    console.log('✅ Pedido añadido a Hoja 2');
     return true;
   } catch (error) {
     console.error('❌ Error al añadir pedido:', error.message);
@@ -204,7 +242,7 @@ async function updateReview(numeroPedido, reviewLink) {
   try {
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: GOOGLE_SHEET_ID,
-      range: `${HOJA_NAME}!A:L`
+      range: `${HOJA_PEDIDOS}!A:L`
     });
 
     const rows = response.data.values || [];
@@ -225,7 +263,7 @@ async function updateReview(numeroPedido, reviewLink) {
     // Actualizar columna H (REVIEW)
     await sheets.spreadsheets.values.update({
       spreadsheetId: GOOGLE_SHEET_ID,
-      range: `${HOJA_NAME}!H${rowIndex}`,
+      range: `${HOJA_PEDIDOS}!H${rowIndex}`,
       valueInputOption: 'USER_ENTERED',
       resource: { values: [[reviewLink]] }
     });
@@ -233,7 +271,7 @@ async function updateReview(numeroPedido, reviewLink) {
     // Actualizar columna K (ESTADO)
     await sheets.spreadsheets.values.update({
       spreadsheetId: GOOGLE_SHEET_ID,
-      range: `${HOJA_NAME}!K${rowIndex}`,
+      range: `${HOJA_PEDIDOS}!K${rowIndex}`,
       valueInputOption: 'USER_ENTERED',
       resource: { values: [['Review Enviada']] }
     });
@@ -254,7 +292,7 @@ async function markAsPaid(numeroPedido) {
   try {
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: GOOGLE_SHEET_ID,
-      range: `${HOJA_NAME}!A:L`
+      range: `${HOJA_PEDIDOS}!A:L`
     });
 
     const rows = response.data.values || [];
@@ -275,7 +313,7 @@ async function markAsPaid(numeroPedido) {
     // Actualizar columna K (ESTADO)
     await sheets.spreadsheets.values.update({
       spreadsheetId: GOOGLE_SHEET_ID,
-      range: `${HOJA_NAME}!K${rowIndex}`,
+      range: `${HOJA_PEDIDOS}!K${rowIndex}`,
       valueInputOption: 'USER_ENTERED',
       resource: { values: [['Review Pagada']] }
     });
@@ -363,7 +401,18 @@ bot.on('message', (msg) => {
     userStates[chatId] = { ...state, step: 'intermediarios', paypal: text };
     bot.sendMessage(chatId, '👥 Envía 2 o 3 intermediarios (nombres o nicks):');
   } else if (state.action === 'registro' && state.step === 'intermediarios') {
-    bot.sendMessage(chatId, '✅ ¡REGISTRO COMPLETADO! Ya puedes hacer pedidos 🛍️', getMainKeyboard(chatId));
+    const fecha = new Date().toLocaleDateString('es-ES');
+    const usuario = msg.from.username || msg.from.first_name;
+    const { perfil, paypal } = state;
+
+    addRegistro(fecha, usuario, perfil, paypal, text).then(success => {
+      if (success) {
+        bot.sendMessage(chatId, '✅ ¡REGISTRO COMPLETADO! Ya puedes hacer pedidos 🛍️', getMainKeyboard(chatId));
+      } else {
+        bot.sendMessage(chatId, '❌ Error al registrar. Intenta de nuevo.', getMainKeyboard(chatId));
+      }
+    });
+
     delete userStates[chatId];
   }
 
