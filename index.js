@@ -32,6 +32,7 @@ const doc = new GoogleSpreadsheet(process.env.GOOGLE_SHEET_ID, serviceAccountAut
 
 // Estados de usuario
 const userStates = {};
+const userTimeouts = {};
 
 // Inicializar Google Sheets
 async function initSheet() {
@@ -120,6 +121,32 @@ async function aplicarColorEstado(sheet, rowIndex, estado) {
   await sheet.saveUpdatedCells();
 }
 
+// Limpiar estado del usuario
+function limpiarEstadoUsuario(chatId) {
+  delete userStates[chatId];
+  if (userTimeouts[chatId]) {
+    clearTimeout(userTimeouts[chatId]);
+    delete userTimeouts[chatId];
+  }
+}
+
+// Establecer timeout para estado
+function establecerTimeout(chatId) {
+  // Limpiar timeout anterior si existe
+  if (userTimeouts[chatId]) {
+    clearTimeout(userTimeouts[chatId]);
+  }
+  
+  // Crear nuevo timeout de 5 minutos
+  userTimeouts[chatId] = setTimeout(() => {
+    if (userStates[chatId]) {
+      delete userStates[chatId];
+      bot.sendMessage(chatId, '⏱️ Sesión expirada por inactividad.\n\nUsa /start para comenzar de nuevo.');
+    }
+    delete userTimeouts[chatId];
+  }, 5 * 60 * 1000); // 5 minutos
+}
+
 // Menú principal
 function mostrarMenuPrincipal(chatId, esAdmin = false) {
   const opciones = [
@@ -145,11 +172,21 @@ bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   const esAdmin = ADMIN_CHAT_IDS.includes(chatId);
   
+  // Limpiar cualquier estado anterior
+  limpiarEstadoUsuario(chatId);
+  
   if (esAdmin) {
     console.log('👑 Admin conectado:', chatId);
   }
   
   mostrarMenuPrincipal(chatId, esAdmin);
+});
+
+// Comando /cancelar
+bot.onText(/\/cancelar/, (msg) => {
+  const chatId = msg.chat.id;
+  limpiarEstadoUsuario(chatId);
+  bot.sendMessage(chatId, '❌ Operación cancelada.\n\nUsa /start para comenzar de nuevo.');
 });
 
 // Manejador de callbacks
@@ -161,29 +198,38 @@ bot.on('callback_query', async (query) => {
   bot.answerCallbackQuery(query.id);
   
   if (data === 'registrarse') {
+    limpiarEstadoUsuario(chatId);
     userStates[chatId] = { step: 'awaiting_perfil_amazon' };
-    bot.sendMessage(chatId, '📝 *REGISTRO*\n\nEnvía tu perfil de Amazon:', { parse_mode: 'Markdown' });
+    establecerTimeout(chatId);
+    bot.sendMessage(chatId, '📝 *REGISTRO*\n\nEnvía tu perfil de Amazon:\n\n_Usa /cancelar para abortar_', { parse_mode: 'Markdown' });
     
   } else if (data === 'hacer_pedido') {
+    limpiarEstadoUsuario(chatId);
     userStates[chatId] = { step: 'awaiting_numero_pedido' };
-    bot.sendMessage(chatId, '🛍️ *NUEVO PEDIDO*\n\nEnvía el número de pedido:', { parse_mode: 'Markdown' });
+    establecerTimeout(chatId);
+    bot.sendMessage(chatId, '🛍️ *NUEVO PEDIDO*\n\nEnvía el número de pedido:\n\n_Usa /cancelar para abortar_', { parse_mode: 'Markdown' });
     
   } else if (data === 'subir_review') {
+    limpiarEstadoUsuario(chatId);
     userStates[chatId] = { step: 'awaiting_review_link' };
-    bot.sendMessage(chatId, '⭐ *SUBIR REVIEW*\n\nEnvía el link de tu review:', { parse_mode: 'Markdown' });
+    establecerTimeout(chatId);
+    bot.sendMessage(chatId, '⭐ *SUBIR REVIEW*\n\nEnvía el link de tu review:\n\n_Usa /cancelar para abortar_', { parse_mode: 'Markdown' });
     
   } else if (data === 'reviews_pendientes' && esAdmin) {
     await mostrarReviewsPendientes(chatId);
     
   } else if (data === 'marcar_pagado' && esAdmin) {
+    limpiarEstadoUsuario(chatId);
     userStates[chatId] = { step: 'awaiting_numero_pagar' };
-    bot.sendMessage(chatId, '💰 *MARCAR COMO PAGADO*\n\nEnvía el número de pedido:', { parse_mode: 'Markdown' });
+    establecerTimeout(chatId);
+    bot.sendMessage(chatId, '💰 *MARCAR COMO PAGADO*\n\nEnvía el número de pedido:\n\n_Usa /cancelar para abortar_', { parse_mode: 'Markdown' });
     
   } else if (data.startsWith('enviar_review_')) {
     const numeroPedido = data.replace('enviar_review_', '');
     await marcarReviewEnviada(chatId, numeroPedido);
     
   } else if (data === 'menu_principal') {
+    limpiarEstadoUsuario(chatId);
     mostrarMenuPrincipal(chatId, esAdmin);
   }
 });
@@ -298,7 +344,13 @@ bot.on('message', async (msg) => {
   const text = msg.text;
   const state = userStates[chatId];
   
-  if (!state || text === '/start') return;
+  // Ignorar comandos
+  if (text && (text === '/start' || text === '/cancelar')) return;
+  
+  if (!state) return;
+  
+  // Renovar timeout en cada mensaje
+  establecerTimeout(chatId);
   
   try {
     // REGISTRO
@@ -331,7 +383,7 @@ bot.on('message', async (msg) => {
         }
       });
       
-      delete userStates[chatId];
+      limpiarEstadoUsuario(chatId);
       
     // HACER PEDIDO
     } else if (state.step === 'awaiting_numero_pedido') {
@@ -405,7 +457,7 @@ bot.on('message', async (msg) => {
         }
       });
       
-      delete userStates[chatId];
+      limpiarEstadoUsuario(chatId);
       
     // SUBIR REVIEW
     } else if (state.step === 'awaiting_review_link') {
@@ -452,7 +504,7 @@ bot.on('message', async (msg) => {
         bot.sendMessage(chatId, '❌ No se encontró el pedido. Verifica el número y PayPal.');
       }
       
-      delete userStates[chatId];
+      limpiarEstadoUsuario(chatId);
       
     // MARCAR PAGADO (ADMIN)
     } else if (state.step === 'awaiting_numero_pagar') {
@@ -484,13 +536,13 @@ bot.on('message', async (msg) => {
         bot.sendMessage(chatId, '❌ No se encontró el pedido.');
       }
       
-      delete userStates[chatId];
+      limpiarEstadoUsuario(chatId);
     }
     
   } catch (error) {
-    bot.sendMessage(chatId, '❌ Error al procesar tu solicitud. Intenta de nuevo.');
-    console.error(error);
-    delete userStates[chatId];
+    bot.sendMessage(chatId, '❌ Error al procesar tu solicitud.\n\nUsa /start para comenzar de nuevo.');
+    console.error('Error en manejador:', error);
+    limpiarEstadoUsuario(chatId);
   }
 });
 
