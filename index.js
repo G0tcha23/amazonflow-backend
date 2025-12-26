@@ -273,8 +273,16 @@ bot.on('callback_query', async (query) => {
 async function mostrarReviewsPendientes(chatId) {
   try {
     const sheet = doc.sheetsByIndex[1];
-    await sheet.loadRows(); // Cargar todas las filas
-    const rows = sheet.rowCount > 1 ? await sheet.getRows() : [];
+    const rows = await sheet.getRows();
+    
+    if (!rows || rows.length === 0) {
+      bot.sendMessage(chatId, '✅ No hay reviews pendientes de enviar al seller.', {
+        reply_markup: {
+          inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+        }
+      });
+      return;
+    }
     
     const reviewsPendientes = rows.filter(row => {
       const estado = row.get('ESTADO');
