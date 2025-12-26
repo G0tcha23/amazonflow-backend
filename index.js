@@ -271,11 +271,17 @@ bot.on('callback_query', async (query) => {
 
 // Mostrar reviews pendientes
 async function mostrarReviewsPendientes(chatId) {
+  console.log('🔍 Iniciando mostrarReviewsPendientes para chatId:', chatId);
+  
   try {
     const sheet = doc.sheetsByIndex[1];
+    console.log('📄 Hoja obtenida:', sheet.title);
+    
     const rows = await sheet.getRows();
+    console.log('📊 Total de filas obtenidas:', rows.length);
     
     if (!rows || rows.length === 0) {
+      console.log('⚠️ No hay filas en la hoja');
       bot.sendMessage(chatId, '✅ No hay reviews pendientes de enviar al seller.', {
         reply_markup: {
           inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
@@ -284,10 +290,19 @@ async function mostrarReviewsPendientes(chatId) {
       return;
     }
     
+    // Debug: mostrar todos los estados
+    rows.forEach((row, i) => {
+      console.log(`Fila ${i}: Estado = "${row.get('ESTADO')}", Número = "${row.get('NUMERO')}"`);
+    });
+    
     const reviewsPendientes = rows.filter(row => {
       const estado = row.get('ESTADO');
-      return estado && estado.trim() === 'Review Subida';
+      const esReviewSubida = estado && estado.trim() === 'Review Subida';
+      console.log(`Revisando fila: Estado="${estado}", ¿Es Review Subida? ${esReviewSubida}`);
+      return esReviewSubida;
     });
+    
+    console.log('🔔 Reviews pendientes encontradas:', reviewsPendientes.length);
     
     if (reviewsPendientes.length === 0) {
       bot.sendMessage(chatId, '✅ No hay reviews pendientes de enviar al seller.', {
@@ -317,14 +332,16 @@ async function mostrarReviewsPendientes(chatId) {
     
     botones.push([{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]);
     
+    console.log('✅ Enviando mensaje con', botones.length, 'botones');
+    
     bot.sendMessage(chatId, mensaje, {
       parse_mode: 'Markdown',
       reply_markup: { inline_keyboard: botones }
     });
     
   } catch (error) {
+    console.error('❌ Error completo en mostrarReviewsPendientes:', error);
     bot.sendMessage(chatId, '❌ Error al obtener reviews pendientes: ' + error.message);
-    console.error('Error en mostrarReviewsPendientes:', error);
   }
 }
 
