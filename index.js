@@ -18,7 +18,6 @@ const VENDEDORES = [
   // Ejemplos (elimina y añade los tuyos):
   // 'Vendedor1',
   // 'Vendedor2',
-  // 'Vendedor3'
 ];
 
 // Autenticación Google Sheets
@@ -34,6 +33,35 @@ const doc = new GoogleSpreadsheet(process.env.GOOGLE_SHEET_ID, serviceAccountAut
 const userStates = {};
 const userTimeouts = {};
 
+// Mapeo de estados a colores
+const ESTADOS_COLORES = {
+  'Pendiente': {
+    bg: { red: 1, green: 1, blue: 1 },
+    text: { red: 0, green: 0, blue: 0 },
+    emoji: '⚪'
+  },
+  'Review Subida': {
+    bg: { red: 1, green: 0.647, blue: 0 },
+    text: { red: 0, green: 0, blue: 0 },
+    emoji: '🟠'
+  },
+  'Review Enviada': {
+    bg: { red: 0.682, green: 0.851, blue: 0.902 },
+    text: { red: 0, green: 0, blue: 0 },
+    emoji: '💙'
+  },
+  'Review Pagada': {
+    bg: { red: 0.259, green: 0.522, blue: 0.957 },
+    text: { red: 1, green: 1, blue: 1 },
+    emoji: '🔵'
+  },
+  'Completado': {
+    bg: { red: 1, green: 1, blue: 0 },
+    text: { red: 0, green: 0, blue: 0 },
+    emoji: '🟡'
+  }
+};
+
 // Inicializar Google Sheets
 async function initSheet() {
   try {
@@ -48,33 +76,55 @@ async function initSheet() {
     
     console.log('📄 Hoja 2 encontrada:', sheet.title);
     await sheet.loadHeaderRow();
+    
+    // Verificar si existe columna PAGADO, si no, crearla
+    if (!sheet.headerValues.includes('PAGADO')) {
+      console.log('➕ Añadiendo columna PAGADO...');
+      await añadirColumnaPagado(sheet);
+    }
+    
     console.log('✅ Encabezados:', sheet.headerValues);
     
-    // Formatear encabezados
     await formatearEncabezados();
     
-    // Solo crear hojas de vendedores si hay vendedores configurados
     if (VENDEDORES.length > 0) {
       await crearHojasVendedores();
     } else {
       console.log('ℹ️ No hay vendedores configurados (array vacío)');
     }
     
+    // Iniciar sincronización periódica (cada 30 segundos)
+    iniciarSincronizacionPeriodica();
+    
     console.log('🤖 Bot iniciado exitosamente');
   } catch (error) {
     console.error('❌ Error al iniciar:', error.message);
     console.error('Stack:', error.stack);
-    console.error('Verifica tus variables de entorno de Google Sheets');
     process.exit(1);
   }
 }
 
-// Formatear encabezados con estilo
+// Añadir columna PAGADO con validación de checkbox
+async function añadirColumnaPagado(sheet) {
+  try {
+    // Actualizar encabezados manualmente
+    await sheet.setHeaderRow([
+      'FECHA', 'ARTICULO', 'IMAGEN', 'DESCRIPCION', 'NUMERO', 
+      'PAYPAL', 'PERFIL AMZ', 'REVIEW', 'NICK', 'COMISION', 'ESTADO', 'VENDEDOR', 'PAGADO'
+    ]);
+    
+    console.log('✅ Columna PAGADO añadida');
+  } catch (error) {
+    console.error('❌ Error añadiendo columna PAGADO:', error);
+  }
+}
+
+// Formatear encabezados con estilo (ahora incluye PAGADO)
 async function formatearEncabezados() {
   const sheet = doc.sheetsByIndex[1];
-  await sheet.loadCells('A1:L1');
+  await sheet.loadCells('A1:M1'); // Ahora son 13 columnas (A-M)
   
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 13; i++) {
     const cell = sheet.getCell(0, i);
     cell.textFormat = { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } };
     cell.backgroundColor = { red: 0.1, green: 0.137, blue: 0.494 };
@@ -93,9 +143,21 @@ async function crearHojasVendedores() {
         hojaVendedor = await doc.addSheet({ title: vendedor });
         await hojaVendedor.setHeaderRow([
           'FECHA', 'ARTICULO', 'IMAGEN', 'DESCRIPCION', 'NUMERO', 
-          'PAYPAL', 'PERFIL AMZ', 'REVIEW', 'NICK', 'COMISION', 'ESTADO', 'VENDEDOR'
+          'PAYPAL', 'PERFIL AMZ', 'REVIEW', 'NICK', 'COMISION', 'ESTADO', 'VENDEDOR', 'PAGADO'
         ]);
+        await formatearEncabezadosVendedor(hojaVendedor);
         console.log(`✨ Hoja creada: ${vendedor}`);
+      } else {
+        // Verificar si tiene columna PAGADO
+        await hojaVendedor.loadHeaderRow();
+        if (!hojaVendedor.headerValues.includes('PAGADO')) {
+          await hojaVendedor.setHeaderRow([
+            'FECHA', 'ARTICULO', 'IMAGEN', 'DESCRIPCION', 'NUMERO', 
+            'PAYPAL', 'PERFIL AMZ', 'REVIEW', 'NICK', 'COMISION', 'ESTADO', 'VENDEDOR', 'PAGADO'
+          ]);
+          await formatearEncabezadosVendedor(hojaVendedor);
+          console.log(`✅ Columna PAGADO añadida a hoja: ${vendedor}`);
+        }
       }
     } catch (error) {
       console.error(`Error creando hoja ${vendedor}:`, error.message);
@@ -103,29 +165,149 @@ async function crearHojasVendedores() {
   }
 }
 
-// Aplicar color según estado
-async function aplicarColorEstado(sheet, rowIndex, estado) {
-  await sheet.loadCells(`A${rowIndex}:L${rowIndex}`);
+// Formatear encabezados de hojas de vendedores
+async function formatearEncabezadosVendedor(sheet) {
+  await sheet.loadCells('A1:M1');
   
-  let color = { red: 1, green: 1, blue: 1 };
-  let textColor = { red: 0, green: 0, blue: 0 };
-  
-  if (estado === 'Review Subida') {
-    color = { red: 1, green: 0.647, blue: 0 };
-  } else if (estado === 'Review Enviada') {
-    color = { red: 0.682, green: 0.851, blue: 0.902 };
-  } else if (estado === 'Review Pagada') {
-    color = { red: 0.259, green: 0.522, blue: 0.957 };
-    textColor = { red: 1, green: 1, blue: 1 };
-  }
-  
-  for (let i = 0; i < 12; i++) {
-    const cell = sheet.getCell(rowIndex - 1, i);
-    cell.backgroundColor = color;
-    cell.textFormat = { foregroundColor: textColor };
+  for (let i = 0; i < 13; i++) {
+    const cell = sheet.getCell(0, i);
+    cell.textFormat = { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } };
+    cell.backgroundColor = { red: 0.1, green: 0.137, blue: 0.494 };
+    cell.horizontalAlignment = 'CENTER';
   }
   
   await sheet.saveUpdatedCells();
+}
+
+// Aplicar color según estado
+async function aplicarColorEstado(sheet, rowIndex, estado) {
+  const colorConfig = ESTADOS_COLORES[estado] || ESTADOS_COLORES['Pendiente'];
+  
+  await sheet.loadCells(`A${rowIndex}:M${rowIndex}`); // Ahora son 13 columnas
+  
+  for (let i = 0; i < 13; i++) {
+    const cell = sheet.getCell(rowIndex - 1, i);
+    cell.backgroundColor = colorConfig.bg;
+    cell.textFormat = { foregroundColor: colorConfig.text };
+  }
+  
+  await sheet.saveUpdatedCells();
+}
+
+// Sincronizar estado cuando checkbox PAGADO cambia
+async function sincronizarCheckboxPagado(numeroPedido, estaMarcado, hojaOrigen) {
+  try {
+    const nuevoEstado = estaMarcado ? 'Completado' : 'Review Pagada';
+    console.log(`🔄 Sincronizando checkbox PAGADO: ${numeroPedido} → ${estaMarcado ? 'Marcado' : 'Desmarcado'}`);
+    
+    // Actualizar Hoja 2 (si no es el origen)
+    if (hojaOrigen !== 'Hoja 2') {
+      const sheetPrincipal = doc.sheetsByIndex[1];
+      const rows = await sheetPrincipal.getRows();
+      const row = rows.find(r => r.get('NUMERO') === numeroPedido);
+      
+      if (row) {
+        row.set('ESTADO', nuevoEstado);
+        row.set('PAGADO', estaMarcado);
+        await row.save();
+        await aplicarColorEstado(sheetPrincipal, row.rowNumber, nuevoEstado);
+        console.log(`✅ Hoja 2 sincronizada: ${numeroPedido} → ${nuevoEstado}`);
+      }
+    }
+    
+    // Actualizar hojas de vendedores (si no son el origen)
+    if (VENDEDORES.length > 0) {
+      for (const vendedor of VENDEDORES) {
+        if (hojaOrigen === vendedor) continue;
+        
+        const hojaVendedor = doc.sheetsByTitle[vendedor];
+        if (hojaVendedor) {
+          const rows = await hojaVendedor.getRows();
+          const row = rows.find(r => r.get('NUMERO') === numeroPedido);
+          
+          if (row) {
+            row.set('ESTADO', nuevoEstado);
+            row.set('PAGADO', estaMarcado);
+            await row.save();
+            await aplicarColorEstado(hojaVendedor, row.rowNumber, nuevoEstado);
+            console.log(`✅ Hoja ${vendedor} sincronizada: ${numeroPedido} → ${nuevoEstado}`);
+          }
+        }
+      }
+    }
+    
+  } catch (error) {
+    console.error('❌ Error sincronizando checkbox PAGADO:', error);
+  }
+}
+
+// Detectar cambios en checkbox PAGADO y sincronizar
+async function detectarCambiosCheckbox() {
+  try {
+    // Verificar cambios en Hoja 2
+    const sheetPrincipal = doc.sheetsByIndex[1];
+    const rowsPrincipal = await sheetPrincipal.getRows();
+    
+    for (const row of rowsPrincipal) {
+      const numero = row.get('NUMERO');
+      const pagado = row.get('PAGADO');
+      const estadoActual = row.get('ESTADO');
+      
+      if (!numero) continue;
+      
+      const deberiaSer = pagado === true || pagado === 'TRUE' || pagado === 'true';
+      const estadoEsperado = deberiaSer ? 'Completado' : (estadoActual === 'Completado' ? 'Review Pagada' : estadoActual);
+      
+      // Si el checkbox cambió, sincronizar
+      if ((deberiaSer && estadoActual !== 'Completado') || (!deberiaSer && estadoActual === 'Completado')) {
+        console.log(`🔄 Cambio detectado en Hoja 2: ${numero} → Pagado: ${deberiaSer}`);
+        await sincronizarCheckboxPagado(numero, deberiaSer, 'Hoja 2');
+      }
+    }
+    
+    // Verificar cambios en hojas de vendedores
+    for (const vendedor of VENDEDORES) {
+      const hojaVendedor = doc.sheetsByTitle[vendedor];
+      if (hojaVendedor) {
+        const rowsVendedor = await hojaVendedor.getRows();
+        
+        for (const rowVendedor of rowsVendedor) {
+          const numero = rowVendedor.get('NUMERO');
+          const pagadoVendedor = rowVendedor.get('PAGADO');
+          const estadoVendedor = rowVendedor.get('ESTADO');
+          
+          if (!numero) continue;
+          
+          const deberiaSer = pagadoVendedor === true || pagadoVendedor === 'TRUE' || pagadoVendedor === 'true';
+          const estadoEsperado = deberiaSer ? 'Completado' : (estadoVendedor === 'Completado' ? 'Review Pagada' : estadoVendedor);
+          
+          // Verificar si es diferente a Hoja 2
+          const rowPrincipal = rowsPrincipal.find(r => r.get('NUMERO') === numero);
+          if (rowPrincipal) {
+            const pagadoPrincipal = rowPrincipal.get('PAGADO');
+            const deberiaPrincipal = pagadoPrincipal === true || pagadoPrincipal === 'TRUE' || pagadoPrincipal === 'true';
+            
+            if (deberiaSer !== deberiaPrincipal) {
+              console.log(`🔄 Cambio detectado en ${vendedor}: ${numero} → Pagado: ${deberiaSer}`);
+              await sincronizarCheckboxPagado(numero, deberiaSer, vendedor);
+            }
+          }
+        }
+      }
+    }
+    
+  } catch (error) {
+    console.error('❌ Error detectando cambios en checkbox:', error);
+  }
+}
+
+// Iniciar sincronización periódica (cada 30 segundos)
+function iniciarSincronizacionPeriodica() {
+  console.log('🔄 Sincronización automática iniciada (cada 30 segundos)');
+  
+  setInterval(async () => {
+    await detectarCambiosCheckbox();
+  }, 30000); // 30 segundos
 }
 
 // Limpiar estado del usuario
@@ -213,6 +395,8 @@ bot.onText(/\/cancelar/, (msg) => {
     reply_markup: removerTeclado()
   });
 });
+
+// Callback queries
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
   const data = query.data;
@@ -275,13 +459,9 @@ async function mostrarReviewsPendientes(chatId) {
   
   try {
     const sheet = doc.sheetsByIndex[1];
-    console.log('📄 Hoja obtenida:', sheet.title);
-    
     const rows = await sheet.getRows();
-    console.log('📊 Total de filas obtenidas:', rows.length);
     
     if (!rows || rows.length === 0) {
-      console.log('⚠️ No hay filas en la hoja');
       bot.sendMessage(chatId, '✅ No hay reviews pendientes de enviar al seller.', {
         reply_markup: {
           inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
@@ -290,19 +470,10 @@ async function mostrarReviewsPendientes(chatId) {
       return;
     }
     
-    // Debug: mostrar todos los estados
-    rows.forEach((row, i) => {
-      console.log(`Fila ${i}: Estado = "${row.get('ESTADO')}", Número = "${row.get('NUMERO')}"`);
-    });
-    
     const reviewsPendientes = rows.filter(row => {
       const estado = row.get('ESTADO');
-      const esReviewSubida = estado && estado.trim() === 'Review Subida';
-      console.log(`Revisando fila: Estado="${estado}", ¿Es Review Subida? ${esReviewSubida}`);
-      return esReviewSubida;
+      return estado && estado.trim() === 'Review Subida';
     });
-    
-    console.log('🔔 Reviews pendientes encontradas:', reviewsPendientes.length);
     
     if (reviewsPendientes.length === 0) {
       bot.sendMessage(chatId, '✅ No hay reviews pendientes de enviar al seller.', {
@@ -332,15 +503,13 @@ async function mostrarReviewsPendientes(chatId) {
     
     botones.push([{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]);
     
-    console.log('✅ Enviando mensaje con', botones.length, 'botones');
-    
     bot.sendMessage(chatId, mensaje, {
       parse_mode: 'Markdown',
       reply_markup: { inline_keyboard: botones }
     });
     
   } catch (error) {
-    console.error('❌ Error completo en mostrarReviewsPendientes:', error);
+    console.error('❌ Error en mostrarReviewsPendientes:', error);
     bot.sendMessage(chatId, '❌ Error al obtener reviews pendientes: ' + error.message);
   }
 }
@@ -364,7 +533,21 @@ async function marcarReviewEnviada(chatId, numeroPedido) {
     const rowIndex = row.rowNumber;
     await aplicarColorEstado(sheet, rowIndex, 'Review Enviada');
     
-    // MENSAJE SOLO PARA ADMIN
+    // Sincronizar con hojas de vendedores
+    for (const vendedor of VENDEDORES) {
+      const hojaVendedor = doc.sheetsByTitle[vendedor];
+      if (hojaVendedor) {
+        const rowsVendedor = await hojaVendedor.getRows();
+        const rowVendedor = rowsVendedor.find(r => r.get('NUMERO') === numeroPedido);
+        
+        if (rowVendedor) {
+          rowVendedor.set('ESTADO', 'Review Enviada');
+          await rowVendedor.save();
+          await aplicarColorEstado(hojaVendedor, rowVendedor.rowNumber, 'Review Enviada');
+        }
+      }
+    }
+    
     bot.sendMessage(chatId, `✅ Review del pedido *${numeroPedido}* marcada como enviada al seller.\n\n🔵 Cambió a color azul celeste.`, {
       parse_mode: 'Markdown',
       reply_markup: {
@@ -409,7 +592,6 @@ bot.on('message', async (msg) => {
   const text = msg.text;
   const esAdmin = ADMIN_CHAT_IDS.includes(chatId);
   
-  // Manejar botones de control PRIMERO (antes de cualquier verificación)
   if (text === '❌ CANCELAR') {
     limpiarEstadoUsuario(chatId);
     bot.sendMessage(chatId, '❌ Operación cancelada.', {
@@ -429,7 +611,6 @@ bot.on('message', async (msg) => {
   
   if (!state) return;
   
-  // Renovar timeout en cada mensaje
   establecerTimeout(chatId);
   
   try {
@@ -481,17 +662,13 @@ bot.on('message', async (msg) => {
       let imagenUrl = null;
       let tipoImagen = null;
       
-      // 1. Aceptar fotos comprimidas (más común en móviles)
       if (msg.photo) {
         fileId = msg.photo[msg.photo.length - 1].file_id;
         tipoImagen = 'photo';
-      }
-      // 2. Aceptar documentos de imagen (capturas, archivos, portapapeles)
-      else if (msg.document) {
+      } else if (msg.document) {
         const mimeType = msg.document.mime_type || '';
         const fileName = msg.document.file_name || '';
         
-        // Verificar si es imagen por MIME type o extensión
         const esImagen = mimeType.startsWith('image/') || 
                         /\.(jpg|jpeg|png|gif|bmp|webp|heic|heif|tiff)$/i.test(fileName);
         
@@ -499,15 +676,12 @@ bot.on('message', async (msg) => {
           fileId = msg.document.file_id;
           tipoImagen = 'document';
         }
-      }
-      // 3. Aceptar stickers (algunos usuarios los usan)
-      else if (msg.sticker) {
+      } else if (msg.sticker) {
         fileId = msg.sticker.file_id;
         tipoImagen = 'sticker';
       }
       
       if (fileId) {
-        // Construir URL correctamente
         imagenUrl = `https://api.telegram.org/file/bot${token}/${fileId}`;
         state.imagenUrl = imagenUrl;
         state.fileId = fileId;
@@ -527,13 +701,11 @@ bot.on('message', async (msg) => {
       const paypal = text;
       
       try {
-        // Obtener perfil del registro
         const sheetRegistro = doc.sheetsByIndex[0];
         const rowsRegistro = await sheetRegistro.getRows();
         const userRegistro = rowsRegistro.find(r => r.get('PAYPAL') === paypal);
         const perfilAmz = userRegistro ? userRegistro.get('PERFIL') : 'N/A';
         
-        // Guardar en Hoja 2
         const sheetPedidos = doc.sheetsByIndex[1];
         const nuevaFila = await sheetPedidos.addRow({
           FECHA: new Date().toLocaleDateString('es-ES'),
@@ -547,20 +719,16 @@ bot.on('message', async (msg) => {
           NICK: msg.from.username || msg.from.first_name,
           COMISION: '',
           ESTADO: 'Pendiente',
-          VENDEDOR: ''
+          VENDEDOR: '',
+          PAGADO: false
         });
         
         console.log('✅ Pedido guardado en Hoja 2:', state.numeroPedido);
         
-        // Enviar imagen usando el file_id (funciona con todos los formatos)
         try {
           if (state.tipoImagen === 'photo' || state.tipoImagen === 'document') {
             await bot.sendPhoto(chatId, state.fileId, {
               caption: '✅ Imagen guardada correctamente',
-              reply_markup: removerTeclado()
-            });
-          } else if (state.tipoImagen === 'sticker') {
-            await bot.sendMessage(chatId, '✅ Imagen guardada correctamente', {
               reply_markup: removerTeclado()
             });
           }
@@ -568,7 +736,6 @@ bot.on('message', async (msg) => {
           console.log('Error al reenviar imagen (no crítico):', error.message);
         }
         
-        // Luego el resumen
         const resumen = `📦 *PEDIDO REGISTRADO*\n\n` +
           `🔢 Número: ${state.numeroPedido}\n` +
           `💰 PayPal: ${paypal}\n` +
@@ -621,7 +788,7 @@ bot.on('message', async (msg) => {
         const rowIndex = row.rowNumber;
         await aplicarColorEstado(sheet, rowIndex, 'Review Subida');
         
-        bot.sendMessage(chatId, '✅ Review subida correctamente.\n\n⏳ Pendiente de envío al seller (color naranja).', {
+        bot.sendMessage(chatId, '✅ Review subida correctamente.\n\nTu pedido está siendo procesado.', {
           reply_markup: {
             inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
           }
@@ -657,7 +824,21 @@ bot.on('message', async (msg) => {
         const rowIndex = row.rowNumber;
         await aplicarColorEstado(sheet, rowIndex, 'Review Pagada');
         
-        // MENSAJE SOLO PARA ADMIN
+        // Sincronizar con hojas de vendedores
+        for (const vendedor of VENDEDORES) {
+          const hojaVendedor = doc.sheetsByTitle[vendedor];
+          if (hojaVendedor) {
+            const rowsVendedor = await hojaVendedor.getRows();
+            const rowVendedor = rowsVendedor.find(r => r.get('NUMERO') === numeroPedido);
+            
+            if (rowVendedor) {
+              rowVendedor.set('ESTADO', 'Review Pagada');
+              await rowVendedor.save();
+              await aplicarColorEstado(hojaVendedor, rowVendedor.rowNumber, 'Review Pagada');
+            }
+          }
+        }
+        
         bot.sendMessage(chatId, `✅ Pedido *${numeroPedido}* marcado como pagado.\n\n🔵 Cambió a color azul oscuro.`, {
           parse_mode: 'Markdown',
           reply_markup: {
@@ -685,7 +866,7 @@ bot.on('message', async (msg) => {
 
 // Servidor Express
 app.get('/', (req, res) => {
-  res.send('Bot AmazonFlow funcionando correctamente');
+  res.send('Bot AmazonFlow funcionando correctamente - Con sincronización de checkbox PAGADO');
 });
 
 app.listen(PORT, () => {
