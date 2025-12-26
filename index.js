@@ -15,7 +15,7 @@ const ADMIN_CHAT_IDS = [8167109];
 
 // Lista de vendedores (configura aquí tus vendedores reales)
 const VENDEDORES = [
-  // Ejemplos (elimina y añade los tuyos):
+  // Ejemplos (añade los tuyos):
   // 'Vendedor1',
   // 'Vendedor2',
 ];
@@ -77,13 +77,13 @@ async function initSheet() {
     console.log('📄 Hoja 2 encontrada:', sheet.title);
     await sheet.loadHeaderRow();
     
-    // Verificar si existe columna PAGADO, si no, crearla
+    // Verificar y crear columna PAGADO en Hoja 2
     if (!sheet.headerValues.includes('PAGADO')) {
-      console.log('➕ Añadiendo columna PAGADO...');
+      console.log('➕ Añadiendo columna PAGADO a Hoja 2...');
       await añadirColumnaPagado(sheet);
     }
     
-    console.log('✅ Encabezados:', sheet.headerValues);
+    console.log('✅ Encabezados Hoja 2:', sheet.headerValues);
     
     await formatearEncabezados();
     
@@ -92,6 +92,9 @@ async function initSheet() {
     } else {
       console.log('ℹ️ No hay vendedores configurados (array vacío)');
     }
+    
+    // Configurar validación de desplegable
+    await configurarDesplegablePagado();
     
     // Iniciar sincronización periódica (cada 30 segundos)
     iniciarSincronizacionPeriodica();
@@ -104,25 +107,92 @@ async function initSheet() {
   }
 }
 
-// Añadir columna PAGADO con validación de checkbox
+// Añadir columna PAGADO
 async function añadirColumnaPagado(sheet) {
   try {
-    // Actualizar encabezados manualmente
     await sheet.setHeaderRow([
       'FECHA', 'ARTICULO', 'IMAGEN', 'DESCRIPCION', 'NUMERO', 
       'PAYPAL', 'PERFIL AMZ', 'REVIEW', 'NICK', 'COMISION', 'ESTADO', 'VENDEDOR', 'PAGADO'
     ]);
-    
     console.log('✅ Columna PAGADO añadida');
   } catch (error) {
     console.error('❌ Error añadiendo columna PAGADO:', error);
   }
 }
 
-// Formatear encabezados con estilo (ahora incluye PAGADO)
+// Configurar validación de desplegable en columna PAGADO
+async function configurarDesplegablePagado() {
+  try {
+    const sheetId = doc.sheetsByIndex[1].sheetId;
+    
+    // Request para agregar validación de datos (desplegable)
+    const requests = [{
+      setDataValidation: {
+        range: {
+          sheetId: sheetId,
+          startRowIndex: 1, // Desde fila 2 (después del header)
+          endRowIndex: 1000, // Hasta fila 1000
+          startColumnIndex: 12, // Columna M (PAGADO)
+          endColumnIndex: 13
+        },
+        rule: {
+          condition: {
+            type: 'ONE_OF_LIST',
+            values: [
+              { userEnteredValue: 'PENDIENTE' },
+              { userEnteredValue: 'PAGADO' }
+            ]
+          },
+          showCustomUi: true,
+          strict: true
+        }
+      }
+    }];
+    
+    await doc.batchUpdate({ requests });
+    console.log('✅ Desplegable PAGADO configurado en Hoja 2');
+    
+    // Configurar también en hojas de vendedores
+    for (const vendedor of VENDEDORES) {
+      const hojaVendedor = doc.sheetsByTitle[vendedor];
+      if (hojaVendedor) {
+        const requestsVendedor = [{
+          setDataValidation: {
+            range: {
+              sheetId: hojaVendedor.sheetId,
+              startRowIndex: 1,
+              endRowIndex: 1000,
+              startColumnIndex: 12,
+              endColumnIndex: 13
+            },
+            rule: {
+              condition: {
+                type: 'ONE_OF_LIST',
+                values: [
+                  { userEnteredValue: 'PENDIENTE' },
+                  { userEnteredValue: 'PAGADO' }
+                ]
+              },
+              showCustomUi: true,
+              strict: true
+            }
+          }
+        }];
+        
+        await doc.batchUpdate({ requests: requestsVendedor });
+        console.log(`✅ Desplegable PAGADO configurado en hoja: ${vendedor}`);
+      }
+    }
+    
+  } catch (error) {
+    console.error('❌ Error configurando desplegable:', error);
+  }
+}
+
+// Formatear encabezados con estilo
 async function formatearEncabezados() {
   const sheet = doc.sheetsByIndex[1];
-  await sheet.loadCells('A1:M1'); // Ahora son 13 columnas (A-M)
+  await sheet.loadCells('A1:M1');
   
   for (let i = 0; i < 13; i++) {
     const cell = sheet.getCell(0, i);
@@ -141,26 +211,20 @@ async function crearHojasVendedores() {
       let hojaVendedor = doc.sheetsByTitle[vendedor];
       if (!hojaVendedor) {
         hojaVendedor = await doc.addSheet({ title: vendedor });
-        await hojaVendedor.setHeaderRow([
-          'FECHA', 'ARTICULO', 'IMAGEN', 'DESCRIPCION', 'NUMERO', 
-          'PAYPAL', 'PERFIL AMZ', 'REVIEW', 'NICK', 'COMISION', 'ESTADO', 'VENDEDOR', 'PAGADO'
-        ]);
-        await formatearEncabezadosVendedor(hojaVendedor);
         console.log(`✨ Hoja creada: ${vendedor}`);
-      } else {
-        // Verificar si tiene columna PAGADO
-        await hojaVendedor.loadHeaderRow();
-        if (!hojaVendedor.headerValues.includes('PAGADO')) {
-          await hojaVendedor.setHeaderRow([
-            'FECHA', 'ARTICULO', 'IMAGEN', 'DESCRIPCION', 'NUMERO', 
-            'PAYPAL', 'PERFIL AMZ', 'REVIEW', 'NICK', 'COMISION', 'ESTADO', 'VENDEDOR', 'PAGADO'
-          ]);
-          await formatearEncabezadosVendedor(hojaVendedor);
-          console.log(`✅ Columna PAGADO añadida a hoja: ${vendedor}`);
-        }
       }
+      
+      // SIEMPRE actualizar encabezados para asegurar columna PAGADO
+      await hojaVendedor.setHeaderRow([
+        'FECHA', 'ARTICULO', 'IMAGEN', 'DESCRIPCION', 'NUMERO', 
+        'PAYPAL', 'PERFIL AMZ', 'REVIEW', 'NICK', 'COMISION', 'ESTADO', 'VENDEDOR', 'PAGADO'
+      ]);
+      
+      await formatearEncabezadosVendedor(hojaVendedor);
+      console.log(`✅ Hoja ${vendedor} actualizada con columna PAGADO`);
+      
     } catch (error) {
-      console.error(`Error creando hoja ${vendedor}:`, error.message);
+      console.error(`Error con hoja ${vendedor}:`, error.message);
     }
   }
 }
@@ -183,7 +247,7 @@ async function formatearEncabezadosVendedor(sheet) {
 async function aplicarColorEstado(sheet, rowIndex, estado) {
   const colorConfig = ESTADOS_COLORES[estado] || ESTADOS_COLORES['Pendiente'];
   
-  await sheet.loadCells(`A${rowIndex}:M${rowIndex}`); // Ahora son 13 columnas
+  await sheet.loadCells(`A${rowIndex}:M${rowIndex}`);
   
   for (let i = 0; i < 13; i++) {
     const cell = sheet.getCell(rowIndex - 1, i);
@@ -194,11 +258,13 @@ async function aplicarColorEstado(sheet, rowIndex, estado) {
   await sheet.saveUpdatedCells();
 }
 
-// Sincronizar estado cuando checkbox PAGADO cambia
-async function sincronizarCheckboxPagado(numeroPedido, estaMarcado, hojaOrigen) {
+// Sincronizar estado cuando columna PAGADO cambia
+async function sincronizarColumnaPagado(numeroPedido, valorPagado, hojaOrigen) {
   try {
-    const nuevoEstado = estaMarcado ? 'Completado' : 'Review Pagada';
-    console.log(`🔄 Sincronizando checkbox PAGADO: ${numeroPedido} → ${estaMarcado ? 'Marcado' : 'Desmarcado'}`);
+    const estaPagado = valorPagado === 'PAGADO';
+    const nuevoEstado = estaPagado ? 'Completado' : 'Review Pagada';
+    
+    console.log(`🔄 Sincronizando PAGADO: ${numeroPedido} → ${valorPagado} (Estado: ${nuevoEstado})`);
     
     // Actualizar Hoja 2 (si no es el origen)
     if (hojaOrigen !== 'Hoja 2') {
@@ -208,7 +274,7 @@ async function sincronizarCheckboxPagado(numeroPedido, estaMarcado, hojaOrigen) 
       
       if (row) {
         row.set('ESTADO', nuevoEstado);
-        row.set('PAGADO', estaMarcado);
+        row.set('PAGADO', valorPagado);
         await row.save();
         await aplicarColorEstado(sheetPrincipal, row.rowNumber, nuevoEstado);
         console.log(`✅ Hoja 2 sincronizada: ${numeroPedido} → ${nuevoEstado}`);
@@ -227,7 +293,7 @@ async function sincronizarCheckboxPagado(numeroPedido, estaMarcado, hojaOrigen) 
           
           if (row) {
             row.set('ESTADO', nuevoEstado);
-            row.set('PAGADO', estaMarcado);
+            row.set('PAGADO', valorPagado);
             await row.save();
             await aplicarColorEstado(hojaVendedor, row.rowNumber, nuevoEstado);
             console.log(`✅ Hoja ${vendedor} sincronizada: ${numeroPedido} → ${nuevoEstado}`);
@@ -237,12 +303,12 @@ async function sincronizarCheckboxPagado(numeroPedido, estaMarcado, hojaOrigen) 
     }
     
   } catch (error) {
-    console.error('❌ Error sincronizando checkbox PAGADO:', error);
+    console.error('❌ Error sincronizando columna PAGADO:', error);
   }
 }
 
-// Detectar cambios en checkbox PAGADO y sincronizar
-async function detectarCambiosCheckbox() {
+// Detectar cambios en columna PAGADO y sincronizar
+async function detectarCambiosPagado() {
   try {
     // Verificar cambios en Hoja 2
     const sheetPrincipal = doc.sheetsByIndex[1];
@@ -255,13 +321,13 @@ async function detectarCambiosCheckbox() {
       
       if (!numero) continue;
       
-      const deberiaSer = pagado === true || pagado === 'TRUE' || pagado === 'true';
-      const estadoEsperado = deberiaSer ? 'Completado' : (estadoActual === 'Completado' ? 'Review Pagada' : estadoActual);
+      const estaPagado = pagado === 'PAGADO';
+      const estadoEsperado = estaPagado ? 'Completado' : (estadoActual === 'Completado' ? 'Review Pagada' : estadoActual);
       
-      // Si el checkbox cambió, sincronizar
-      if ((deberiaSer && estadoActual !== 'Completado') || (!deberiaSer && estadoActual === 'Completado')) {
-        console.log(`🔄 Cambio detectado en Hoja 2: ${numero} → Pagado: ${deberiaSer}`);
-        await sincronizarCheckboxPagado(numero, deberiaSer, 'Hoja 2');
+      // Si hay desincronización, corregir
+      if ((estaPagado && estadoActual !== 'Completado') || (!estaPagado && estadoActual === 'Completado')) {
+        console.log(`🔄 Cambio detectado en Hoja 2: ${numero} → PAGADO: ${pagado}`);
+        await sincronizarColumnaPagado(numero, pagado || 'PENDIENTE', 'Hoja 2');
       }
     }
     
@@ -274,22 +340,17 @@ async function detectarCambiosCheckbox() {
         for (const rowVendedor of rowsVendedor) {
           const numero = rowVendedor.get('NUMERO');
           const pagadoVendedor = rowVendedor.get('PAGADO');
-          const estadoVendedor = rowVendedor.get('ESTADO');
           
           if (!numero) continue;
-          
-          const deberiaSer = pagadoVendedor === true || pagadoVendedor === 'TRUE' || pagadoVendedor === 'true';
-          const estadoEsperado = deberiaSer ? 'Completado' : (estadoVendedor === 'Completado' ? 'Review Pagada' : estadoVendedor);
           
           // Verificar si es diferente a Hoja 2
           const rowPrincipal = rowsPrincipal.find(r => r.get('NUMERO') === numero);
           if (rowPrincipal) {
             const pagadoPrincipal = rowPrincipal.get('PAGADO');
-            const deberiaPrincipal = pagadoPrincipal === true || pagadoPrincipal === 'TRUE' || pagadoPrincipal === 'true';
             
-            if (deberiaSer !== deberiaPrincipal) {
-              console.log(`🔄 Cambio detectado en ${vendedor}: ${numero} → Pagado: ${deberiaSer}`);
-              await sincronizarCheckboxPagado(numero, deberiaSer, vendedor);
+            if (pagadoVendedor !== pagadoPrincipal) {
+              console.log(`🔄 Cambio detectado en ${vendedor}: ${numero} → PAGADO: ${pagadoVendedor}`);
+              await sincronizarColumnaPagado(numero, pagadoVendedor || 'PENDIENTE', vendedor);
             }
           }
         }
@@ -297,16 +358,16 @@ async function detectarCambiosCheckbox() {
     }
     
   } catch (error) {
-    console.error('❌ Error detectando cambios en checkbox:', error);
+    console.error('❌ Error detectando cambios en PAGADO:', error);
   }
 }
 
-// Iniciar sincronización periódica (cada 30 segundos)
+// Iniciar sincronización periódica
 function iniciarSincronizacionPeriodica() {
   console.log('🔄 Sincronización automática iniciada (cada 30 segundos)');
   
   setInterval(async () => {
-    await detectarCambiosCheckbox();
+    await detectarCambiosPagado();
   }, 30000); // 30 segundos
 }
 
@@ -334,7 +395,7 @@ function establecerTimeout(chatId) {
   }, 5 * 60 * 1000);
 }
 
-// Botones de control (CANCELAR y MENÚ)
+// Botones de control
 function getBotonesControl() {
   return {
     keyboard: [
@@ -455,8 +516,6 @@ bot.on('callback_query', async (query) => {
 
 // Mostrar reviews pendientes
 async function mostrarReviewsPendientes(chatId) {
-  console.log('🔍 Iniciando mostrarReviewsPendientes para chatId:', chatId);
-  
   try {
     const sheet = doc.sheetsByIndex[1];
     const rows = await sheet.getRows();
@@ -692,7 +751,7 @@ bot.on('message', async (msg) => {
           reply_markup: getBotonesControl()
         });
       } else {
-        bot.sendMessage(chatId, '⚠️ Por favor envía una imagen válida.\n\n📌 Puedes:\n• Copiar y pegar desde portapapeles\n• Enviar una foto\n• Adjuntar un archivo\n• Hacer captura de pantalla', {
+        bot.sendMessage(chatId, '⚠️ Por favor envía una imagen válida.', {
           reply_markup: getBotonesControl()
         });
       }
@@ -707,7 +766,7 @@ bot.on('message', async (msg) => {
         const perfilAmz = userRegistro ? userRegistro.get('PERFIL') : 'N/A';
         
         const sheetPedidos = doc.sheetsByIndex[1];
-        const nuevaFila = await sheetPedidos.addRow({
+        await sheetPedidos.addRow({
           FECHA: new Date().toLocaleDateString('es-ES'),
           ARTICULO: '',
           IMAGEN: state.imagenUrl,
@@ -720,10 +779,8 @@ bot.on('message', async (msg) => {
           COMISION: '',
           ESTADO: 'Pendiente',
           VENDEDOR: '',
-          PAGADO: false
+          PAGADO: 'PENDIENTE'
         });
-        
-        console.log('✅ Pedido guardado en Hoja 2:', state.numeroPedido);
         
         try {
           if (state.tipoImagen === 'photo' || state.tipoImagen === 'document') {
@@ -733,7 +790,7 @@ bot.on('message', async (msg) => {
             });
           }
         } catch (error) {
-          console.log('Error al reenviar imagen (no crítico):', error.message);
+          console.log('Error al reenviar imagen (no crítico)');
         }
         
         const resumen = `📦 *PEDIDO REGISTRADO*\n\n` +
@@ -753,7 +810,7 @@ bot.on('message', async (msg) => {
         
       } catch (error) {
         console.error('❌ Error al guardar pedido:', error);
-        bot.sendMessage(chatId, '❌ Error al guardar el pedido. Por favor intenta de nuevo.', {
+        bot.sendMessage(chatId, '❌ Error al guardar el pedido.', {
           reply_markup: getBotonesControl()
         });
       }
@@ -785,8 +842,7 @@ bot.on('message', async (msg) => {
         row.set('ESTADO', 'Review Subida');
         await row.save();
         
-        const rowIndex = row.rowNumber;
-        await aplicarColorEstado(sheet, rowIndex, 'Review Subida');
+        await aplicarColorEstado(sheet, row.rowNumber, 'Review Subida');
         
         bot.sendMessage(chatId, '✅ Review subida correctamente.\n\nTu pedido está siendo procesado.', {
           reply_markup: {
@@ -802,7 +858,7 @@ bot.on('message', async (msg) => {
         });
         
       } else {
-        bot.sendMessage(chatId, '❌ No se encontró el pedido. Verifica el número y PayPal.', {
+        bot.sendMessage(chatId, '❌ No se encontró el pedido.', {
           reply_markup: getBotonesControl()
         });
       }
@@ -821,8 +877,7 @@ bot.on('message', async (msg) => {
         row.set('ESTADO', 'Review Pagada');
         await row.save();
         
-        const rowIndex = row.rowNumber;
-        await aplicarColorEstado(sheet, rowIndex, 'Review Pagada');
+        await aplicarColorEstado(sheet, row.rowNumber, 'Review Pagada');
         
         // Sincronizar con hojas de vendedores
         for (const vendedor of VENDEDORES) {
@@ -856,7 +911,7 @@ bot.on('message', async (msg) => {
     }
     
   } catch (error) {
-    bot.sendMessage(chatId, '❌ Error al procesar tu solicitud.\n\nUsa /start para comenzar de nuevo.', {
+    bot.sendMessage(chatId, '❌ Error al procesar tu solicitud.', {
       reply_markup: removerTeclado()
     });
     console.error('Error en manejador:', error);
@@ -866,7 +921,7 @@ bot.on('message', async (msg) => {
 
 // Servidor Express
 app.get('/', (req, res) => {
-  res.send('Bot AmazonFlow funcionando correctamente - Con sincronización de checkbox PAGADO');
+  res.send('Bot AmazonFlow - Con desplegable PAGADO funcionando');
 });
 
 app.listen(PORT, () => {
