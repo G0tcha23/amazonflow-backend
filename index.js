@@ -103,7 +103,7 @@ async function initSheet() {
     await cargarUsuariosRegistrados();
     
     // Iniciar sincronización periódica de colores amarillos (cada 30 segundos)
-    iniciarSincronizacionAmarillo();
+    iniciarSincronizacionColores();
     
     console.log('🤖 Bot iniciado exitosamente');
   } catch (error) {
@@ -220,7 +220,7 @@ async function formatearEncabezadosVendedor(sheet) {
   await sheet.saveUpdatedCells();
 }
 
-// Aplicar color según estado (SIEMPRE TEXTO NEGRO)
+// FUNCIÓN CRÍTICA: Aplicar color con texto SIEMPRE negro
 async function aplicarColorEstado(sheet, rowIndex, estado) {
   try {
     const colorConfig = ESTADOS_COLORES[estado];
@@ -231,30 +231,63 @@ async function aplicarColorEstado(sheet, rowIndex, estado) {
     
     await sheet.loadCells(`A${rowIndex}:M${rowIndex}`);
     
-    // APLICAR COLOR DE FONDO Y TEXTO NEGRO EN TODAS LAS CELDAS
+    // FORZAR color de fondo Y texto negro en TODAS las celdas
     for (let i = 0; i < 13; i++) {
       const cell = sheet.getCell(rowIndex - 1, i);
+      
+      // Aplicar color de fondo
       cell.backgroundColor = colorConfig.bg;
       
-      // FORZAR TEXTO NEGRO
-      if (!cell.textFormat) {
-        cell.textFormat = {};
-      }
+      // CRÍTICO: SIEMPRE forzar texto negro
+      cell.textFormat = cell.textFormat || {};
       cell.textFormat.foregroundColor = { red: 0, green: 0, blue: 0 };
     }
     
     await sheet.saveUpdatedCells();
-    console.log(`🎨 Color ${estado} aplicado en ${sheet.title}, fila ${rowIndex} - TEXTO NEGRO`);
+    console.log(`🎨 Color aplicado en ${sheet.title}, fila ${rowIndex}: ${estado} ${colorConfig.emoji} [TEXTO NEGRO]`);
   } catch (error) {
     console.error(`❌ Error aplicando color en fila ${rowIndex}:`, error.message);
   }
 }
 
-// NUEVA FUNCIÓN: Sincronizar colores amarillos de vendedores a Hoja 2
-async function sincronizarColoresAmarillos() {
+// FUNCIÓN NUEVA: Aplicar color personalizado (amarillo u otro) con texto negro
+async function aplicarColorPersonalizado(sheet, rowIndex, bgColor) {
+  try {
+    await sheet.loadCells(`A${rowIndex}:M${rowIndex}`);
+    
+    for (let i = 0; i < 13; i++) {
+      const cell = sheet.getCell(rowIndex - 1, i);
+      
+      // Aplicar color de fondo personalizado
+      cell.backgroundColor = bgColor;
+      
+      // CRÍTICO: SIEMPRE texto negro
+      cell.textFormat = cell.textFormat || {};
+      cell.textFormat.foregroundColor = { red: 0, green: 0, blue: 0 };
+    }
+    
+    await sheet.saveUpdatedCells();
+    console.log(`🎨 Color personalizado aplicado en ${sheet.title}, fila ${rowIndex} [TEXTO NEGRO]`);
+  } catch (error) {
+    console.error(`❌ Error aplicando color personalizado:`, error.message);
+  }
+}
+
+// Detectar si una celda es amarilla
+function esColorAmarillo(bgColor) {
+  if (!bgColor) return false;
+  // Amarillo: rojo alto, verde alto, azul bajo
+  return bgColor.red > 0.9 && bgColor.green > 0.9 && bgColor.blue < 0.3;
+}
+
+// FUNCIÓN PRINCIPAL: Sincronizar colores de vendedores a Hoja 2
+async function sincronizarColoresVendedores() {
   try {
     const sheetPrincipal = doc.sheetsByIndex[1];
-    if (!sheetPrincipal) return;
+    if (!sheetPrincipal) {
+      console.error('❌ No se encontró Hoja 2');
+      return;
+    }
     
     const rowsPrincipal = await sheetPrincipal.getRows();
     
@@ -271,48 +304,50 @@ async function sincronizarColoresAmarillos() {
           if (!numero) continue;
           
           // Cargar celdas de la fila en hoja vendedor
-          await hojaVendedor.loadCells(`A${rowVendedor.rowNumber}:M${rowVendedor.rowNumber}`);
+          const filaVendedor = rowVendedor.rowNumber;
+          await hojaVendedor.loadCells(`A${filaVendedor}:M${filaVendedor}`);
           
-          // Contar cuántas celdas son amarillas
-          let celdasAmarillas = 0;
-          for (let i = 0; i < 13; i++) {
-            const cell = hojaVendedor.getCell(rowVendedor.rowNumber - 1, i);
-            const bgColor = cell.backgroundColor;
-            
-            if (bgColor && bgColor.red > 0.9 && bgColor.green > 0.9 && bgColor.blue < 0.3) {
-              celdasAmarillas++;
-            }
-          }
+          // Verificar el color de la primera celda (columna A)
+          const primeracelda = hojaVendedor.getCell(filaVendedor - 1, 0);
+          const colorVendedor = primeracelda.backgroundColor;
           
-          // Si hay al menos 10 celdas amarillas, copiar a Hoja 2
-          if (celdasAmarillas >= 10) {
+          // Si hay algún color aplicado en la hoja del vendedor
+          if (colorVendedor) {
+            // Buscar la fila correspondiente en Hoja 2
             const rowPrincipal = rowsPrincipal.find(r => r.get('NUMERO') === numero);
             
             if (rowPrincipal) {
-              // Verificar si Hoja 2 ya está amarilla
-              await sheetPrincipal.loadCells(`A${rowPrincipal.rowNumber}:M${rowPrincipal.rowNumber}`);
-              const cellCheck = sheetPrincipal.getCell(rowPrincipal.rowNumber - 1, 0);
-              const bgCheck = cellCheck.backgroundColor;
+              const filaPrincipal = rowPrincipal.rowNumber;
+              await sheetPrincipal.loadCells(`A${filaPrincipal}:M${filaPrincipal}`);
               
-              const yaEsAmarillo = bgCheck && bgCheck.red > 0.9 && bgCheck.green > 0.9 && bgCheck.blue < 0.3;
+              // Verificar si Hoja 2 ya tiene el mismo color
+              const celdaPrincipal = sheetPrincipal.getCell(filaPrincipal - 1, 0);
+              const colorActualPrincipal = celdaPrincipal.backgroundColor;
               
-              if (!yaEsAmarillo) {
-                console.log(`🟡 Copiando amarillo de ${vendedor} a Hoja 2: ${numero}`);
+              // Comparar colores (con tolerancia de 0.05)
+              const colorDiferente = !colorActualPrincipal ||
+                Math.abs((colorVendedor.red || 0) - (colorActualPrincipal.red || 0)) > 0.05 ||
+                Math.abs((colorVendedor.green || 0) - (colorActualPrincipal.green || 0)) > 0.05 ||
+                Math.abs((colorVendedor.blue || 0) - (colorActualPrincipal.blue || 0)) > 0.05;
+              
+              if (colorDiferente) {
+                console.log(`🔄 Sincronizando color de ${vendedor} a Hoja 2: ${numero}`);
                 
-                // Aplicar amarillo con texto negro en TODAS las celdas
-                for (let i = 0; i < 13; i++) {
-                  const cell = sheetPrincipal.getCell(rowPrincipal.rowNumber - 1, i);
-                  cell.backgroundColor = { red: 1, green: 1, blue: 0 };
-                  
-                  // FORZAR TEXTO NEGRO
-                  if (!cell.textFormat) {
-                    cell.textFormat = {};
+                // Copiar el color exacto de la hoja del vendedor a Hoja 2
+                await aplicarColorPersonalizado(sheetPrincipal, filaPrincipal, colorVendedor);
+                
+                // Detectar si es amarillo para actualizar estado
+                if (esColorAmarillo(colorVendedor)) {
+                  const estadoActual = rowPrincipal.get('ESTADO');
+                  if (estadoActual !== 'Completado') {
+                    rowPrincipal.set('ESTADO', 'Completado');
+                    rowPrincipal.set('PAGADO', 'PAGADO');
+                    await rowPrincipal.save();
+                    console.log(`🟡 Estado actualizado a Completado: ${numero}`);
                   }
-                  cell.textFormat.foregroundColor = { red: 0, green: 0, blue: 0 };
                 }
                 
-                await sheetPrincipal.saveUpdatedCells();
-                console.log(`✅ Amarillo + TEXTO NEGRO aplicado en Hoja 2: ${numero}`);
+                console.log(`✅ Color sincronizado en Hoja 2: ${numero}`);
               }
             }
           }
@@ -322,16 +357,16 @@ async function sincronizarColoresAmarillos() {
       }
     }
   } catch (error) {
-    console.error('❌ Error en sincronizarColoresAmarillos:', error.message);
+    console.error('❌ Error en sincronizarColoresVendedores:', error.message);
   }
 }
 
-// Iniciar sincronización de colores amarillos
-function iniciarSincronizacionAmarillo() {
-  console.log('🔄 Sincronización de amarillo iniciada (cada 30 segundos)');
+// Iniciar sincronización automática
+function iniciarSincronizacionColores() {
+  console.log('🔄 Sincronización de colores iniciada (cada 30 segundos)');
   
   setInterval(async () => {
-    await sincronizarColoresAmarillos();
+    await sincronizarColoresVendedores();
   }, 30000);
 }
 
@@ -585,7 +620,7 @@ async function confirmarPedidoConPayPal(chatId, paypal) {
       PAGADO: ''
     });
     
-    // Aplicar color blanco (Pendiente)
+    // Aplicar color blanco (Pendiente) con texto negro
     await aplicarColorEstado(sheetPedidos, newRow.rowNumber, 'Pendiente');
     
     try {
@@ -638,7 +673,7 @@ async function finalizarPagoSinComprobante(chatId, numeroPedido) {
     row.set('ESTADO', 'Review Pagada');
     await row.save();
     
-    // Aplicar color azul oscuro
+    // Aplicar color azul oscuro con texto negro
     await aplicarColorEstado(sheet, row.rowNumber, 'Review Pagada');
     
     // Sincronizar con hojas de vendedores
@@ -662,565 +697,3 @@ async function finalizarPagoSinComprobante(chatId, numeroPedido) {
         inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
       }
     });
-    
-    limpiarEstadoUsuario(chatId);
-    
-  } catch (error) {
-    console.error('❌ Error finalizando pago:', error);
-    bot.sendMessage(chatId, '❌ Error al procesar el pago.');
-  }
-}
-
-// Mostrar reviews pendientes
-async function mostrarReviewsPendientes(chatId) {
-  try {
-    const sheet = doc.sheetsByIndex[1];
-    const rows = await sheet.getRows();
-    
-    if (!rows || rows.length === 0) {
-      bot.sendMessage(chatId, '✅ No hay reviews pendientes de enviar al seller.', {
-        reply_markup: {
-          inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
-        }
-      });
-      return;
-    }
-    
-    const reviewsPendientes = rows.filter(row => {
-      const estado = row.get('ESTADO');
-      return estado && estado.trim() === 'Review Subida';
-    });
-    
-    if (reviewsPendientes.length === 0) {
-      bot.sendMessage(chatId, '✅ No hay reviews pendientes de enviar al seller.', {
-        reply_markup: {
-          inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
-        }
-      });
-      return;
-    }
-    
-    let mensaje = `🔔 *REVIEWS PENDIENTES DE ENVIAR* (${reviewsPendientes.length})\n\n`;
-    const botones = [];
-    
-    reviewsPendientes.forEach((row, index) => {
-      const numero = row.get('NUMERO') || 'N/A';
-      const review = row.get('REVIEW') || 'N/A';
-      const nick = row.get('NICK') || 'N/A';
-      const paypal = row.get('PAYPAL') || 'N/A';
-      
-      mensaje += `${index + 1}️⃣ *Pedido:* ${numero}\n`;
-      mensaje += `   👤 Usuario: ${nick}\n`;
-      mensaje += `   ⭐ Review: ${review}\n`;
-      mensaje += `   💰 PayPal: ${paypal}\n\n`;
-      
-      botones.push([{ text: `📤 Enviar #${numero}`, callback_data: `enviar_review_${numero}` }]);
-    });
-    
-    botones.push([{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]);
-    
-    bot.sendMessage(chatId, mensaje, {
-      parse_mode: 'Markdown',
-      reply_markup: { inline_keyboard: botones }
-    });
-    
-  } catch (error) {
-    console.error('❌ Error en mostrarReviewsPendientes:', error);
-    bot.sendMessage(chatId, '❌ Error al obtener reviews pendientes: ' + error.message);
-  }
-}
-
-// Procesar review subida
-async function procesarReviewSubida(chatId, numeroPedido, reviewLink, paypal, nick) {
-  try {
-    const sheet = doc.sheetsByIndex[1];
-    const rows = await sheet.getRows();
-    const row = rows.find(r => r.get('NUMERO') === numeroPedido && r.get('PAYPAL') === paypal);
-    
-    if (row) {
-      row.set('REVIEW', reviewLink);
-      row.set('ESTADO', 'Review Subida');
-      await row.save();
-      
-      await aplicarColorEstado(sheet, row.rowNumber, 'Review Subida');
-      
-      // Sincronizar con hojas de vendedores
-      for (const vendedor of VENDEDORES) {
-        const hojaVendedor = doc.sheetsByTitle[vendedor];
-        if (hojaVendedor) {
-          const rowsVendedor = await hojaVendedor.getRows();
-          const rowVendedor = rowsVendedor.find(r => r.get('NUMERO') === numeroPedido);
-          
-          if (rowVendedor) {
-            rowVendedor.set('REVIEW', reviewLink);
-            rowVendedor.set('ESTADO', 'Review Subida');
-            await rowVendedor.save();
-            await aplicarColorEstado(hojaVendedor, rowVendedor.rowNumber, 'Review Subida');
-          }
-        }
-      }
-      
-      bot.sendMessage(chatId, '✅ Review subida correctamente.\n\nTu pedido está siendo procesado.', {
-        reply_markup: {
-          inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
-        }
-      });
-      
-      await notificarNuevaReview({
-        numero: numeroPedido,
-        review: reviewLink,
-        paypal: paypal,
-        nick: nick
-      });
-      
-    } else {
-      bot.sendMessage(chatId, '❌ No se encontró el pedido.', {
-        reply_markup: getBotonesControl()
-      });
-    }
-  } catch (error) {
-    console.error('Error procesando review:', error);
-    bot.sendMessage(chatId, '❌ Error al procesar la review.');
-  }
-}
-
-// Marcar review como enviada al seller
-async function marcarReviewEnviada(chatId, numeroPedido) {
-  try {
-    const sheet = doc.sheetsByIndex[1];
-    const rows = await sheet.getRows();
-    
-    const row = rows.find(r => r.get('NUMERO') === numeroPedido);
-    
-    if (!row) {
-      bot.sendMessage(chatId, '❌ No se encontró el pedido.');
-      return;
-    }
-    
-    row.set('ESTADO', 'Review Enviada');
-    await row.save();
-    
-    const rowIndex = row.rowNumber;
-    await aplicarColorEstado(sheet, rowIndex, 'Review Enviada');
-    
-    // Sincronizar con hojas de vendedores
-    for (const vendedor of VENDEDORES) {
-      const hojaVendedor = doc.sheetsByTitle[vendedor];
-      if (hojaVendedor) {
-        const rowsVendedor = await hojaVendedor.getRows();
-        const rowVendedor = rowsVendedor.find(r => r.get('NUMERO') === numeroPedido);
-        
-        if (rowVendedor) {
-          rowVendedor.set('ESTADO', 'Review Enviada');
-          await rowVendedor.save();
-          await aplicarColorEstado(hojaVendedor, rowVendedor.rowNumber, 'Review Enviada');
-        }
-      }
-    }
-    
-    bot.sendMessage(chatId, `✅ Review del pedido *${numeroPedido}* marcada como enviada al seller.\n\n💙 Cambió a color azul celeste.`, {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🔔 Ver Pendientes', callback_data: 'reviews_pendientes' }],
-          [{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]
-        ]
-      }
-    });
-    
-  } catch (error) {
-    bot.sendMessage(chatId, '❌ Error al actualizar el estado.');
-    console.error(error);
-  }
-}
-
-// Notificar admins sobre nueva review
-async function notificarNuevaReview(datosReview) {
-  const mensaje = `🔔 *NUEVA REVIEW RECIBIDA*\n\n` +
-    `📦 *Pedido:* ${datosReview.numero}\n` +
-    `⭐ *Review:* ${datosReview.review}\n` +
-    `💰 *PayPal:* ${datosReview.paypal}\n` +
-    `👤 *Usuario:* ${datosReview.nick}\n\n` +
-    `⚠️ *Pendiente de enviar al seller*`;
-  
-  for (const adminId of ADMIN_CHAT_IDS) {
-    bot.sendMessage(adminId, mensaje, {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '📤 Marcar como Enviada', callback_data: `enviar_review_${datosReview.numero}` }],
-          [{ text: '🔔 Ver Todas Pendientes', callback_data: 'reviews_pendientes' }]
-        ]
-      }
-    });
-  }
-}
-
-// Manejador de mensajes
-bot.on('message', async (msg) => {
-  const chatId = msg.chat.id;
-  const text = msg.text;
-  const esAdmin = ADMIN_CHAT_IDS.includes(chatId);
-  
-  if (text === '❌ CANCELAR') {
-    limpiarEstadoUsuario(chatId);
-    bot.sendMessage(chatId, '❌ Operación cancelada.', {
-      reply_markup: removerTeclado()
-    });
-    setTimeout(() => mostrarMenuPrincipal(chatId, esAdmin), 500);
-    return;
-  }
-  
-  if (text === '🏠 MENÚ PRINCIPAL') {
-    limpiarEstadoUsuario(chatId);
-    mostrarMenuPrincipal(chatId, esAdmin);
-    return;
-  }
-  
-  const state = userStates[chatId];
-  
-  if (!state) return;
-  
-  establecerTimeout(chatId);
-  
-  try {
-    // REGISTRO
-    if (state.step === 'awaiting_perfil_amazon') {
-      state.perfilAmazon = text;
-      state.step = 'awaiting_paypal_registro';
-      bot.sendMessage(chatId, '💰 Ahora envía tu PayPal:', {
-        reply_markup: getBotonesControl()
-      });
-      
-    } else if (state.step === 'awaiting_paypal_registro') {
-      state.paypal = text;
-      state.step = 'awaiting_intermediarios';
-      bot.sendMessage(chatId, '🤝 Envía 2-3 intermediarios con los que trabajas:', {
-        reply_markup: getBotonesControl()
-      });
-      
-    } else if (state.step === 'awaiting_intermediarios') {
-      const intermediarios = text;
-      
-      const sheetRegistro = doc.sheetsByIndex[0];
-      await sheetRegistro.addRow({
-        FECHA: new Date().toLocaleDateString('es-ES'),
-        USUARIO: msg.from.username || msg.from.first_name,
-        PERFIL: state.perfilAmazon,
-        PAYPAL: state.paypal,
-        INTERMEDIARIOS: intermediarios,
-        CHAT_ID: chatId.toString()
-      });
-      
-      // Actualizar cache
-      registeredUsers.set(state.perfilAmazon.toLowerCase(), {
-        perfil: state.perfilAmazon,
-        paypal: state.paypal,
-        usuario: msg.from.username || msg.from.first_name
-      });
-      
-      // Guardar chat_id
-      userChatIds.set(state.paypal, chatId);
-      
-      bot.sendMessage(chatId, '✅ Registro completado correctamente.\n\nYa puedes hacer pedidos.', {
-        reply_markup: {
-          inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
-        }
-      });
-      
-      limpiarEstadoUsuario(chatId);
-      
-    // HACER PEDIDO
-    } else if (state.step === 'awaiting_numero_pedido') {
-      state.numeroPedido = text;
-      state.step = 'awaiting_captura';
-      bot.sendMessage(chatId, '📸 Envía la captura del pedido:', {
-        reply_markup: getBotonesControl()
-      });
-      
-    } else if (state.step === 'awaiting_captura') {
-      let fileId = null;
-      let imagenUrl = null;
-      let tipoImagen = null;
-      
-      if (msg.photo) {
-        fileId = msg.photo[msg.photo.length - 1].file_id;
-        tipoImagen = 'photo';
-      } else if (msg.document) {
-        const mimeType = msg.document.mime_type || '';
-        const fileName = msg.document.file_name || '';
-        
-        const esImagen = mimeType.startsWith('image/') || 
-                        /\.(jpg|jpeg|png|gif|bmp|webp|heic|heif|tiff)$/i.test(fileName);
-        
-        if (esImagen) {
-          fileId = msg.document.file_id;
-          tipoImagen = 'document';
-        }
-      } else if (msg.sticker) {
-        fileId = msg.sticker.file_id;
-        tipoImagen = 'sticker';
-      }
-      
-      if (fileId) {
-        imagenUrl = `https://api.telegram.org/file/bot${token}/${fileId}`;
-        state.imagenUrl = imagenUrl;
-        state.fileId = fileId;
-        state.tipoImagen = tipoImagen;
-        state.nick = msg.from.username || msg.from.first_name;
-        
-        // Buscar PayPal del usuario registrado
-        const sheetRegistro = doc.sheetsByIndex[0];
-        const rowsRegistro = await sheetRegistro.getRows();
-        const userRegistro = rowsRegistro.find(r => {
-          const usuario = r.get('USUARIO');
-          return usuario && usuario.toLowerCase() === state.nick.toLowerCase();
-        });
-        
-        if (userRegistro && userRegistro.get('PAYPAL')) {
-          const paypalRegistrado = userRegistro.get('PAYPAL');
-          state.paypalSugerido = paypalRegistrado;
-          
-          bot.sendMessage(chatId, `✅ Imagen recibida correctamente\n\n💰 ¿Es este tu PayPal?\n\n*${paypalRegistrado}*`, {
-            parse_mode: 'Markdown',
-            reply_markup: {
-              inline_keyboard: [
-                [
-                  { text: '✅ Sí, es correcto', callback_data: `confirmar_paypal_${paypalRegistrado}` },
-                  { text: '✏️ Modificar', callback_data: 'modificar_paypal' }
-                ],
-                [{ text: '❌ Cancelar', callback_data: 'menu_principal' }]
-              ]
-            }
-          });
-        } else {
-          state.step = 'awaiting_paypal_pedido';
-          bot.sendMessage(chatId, `✅ Imagen recibida correctamente\n\n💰 Envía tu PayPal:`, {
-            reply_markup: getBotonesControl()
-          });
-        }
-      } else {
-        bot.sendMessage(chatId, '⚠️ Por favor envía una imagen válida.', {
-          reply_markup: getBotonesControl()
-        });
-      }
-      
-    } else if (state.step === 'awaiting_nuevo_paypal' || state.step === 'awaiting_paypal_pedido') {
-      const paypal = text;
-      await confirmarPedidoConPayPal(chatId, paypal);
-      
-    // SUBIR REVIEW
-    } else if (state.step === 'awaiting_review_link') {
-      state.reviewLink = text;
-      state.step = 'awaiting_numero_review';
-      bot.sendMessage(chatId, '🔢 Envía el número de pedido:', {
-        reply_markup: getBotonesControl()
-      });
-      
-    } else if (state.step === 'awaiting_numero_review') {
-      state.numeroPedido = text;
-      state.nick = msg.from.username || msg.from.first_name;
-      
-      // Buscar PayPal automáticamente
-      const sheetRegistro = doc.sheetsByIndex[0];
-      const rowsRegistro = await sheetRegistro.getRows();
-      const userRegistro = rowsRegistro.find(r => {
-        const usuario = r.get('USUARIO');
-        return usuario && usuario.toLowerCase() === state.nick.toLowerCase();
-      });
-      
-      if (userRegistro && userRegistro.get('PAYPAL')) {
-        const paypalRegistrado = userRegistro.get('PAYPAL');
-        state.paypalSugerido = paypalRegistrado;
-        
-        bot.sendMessage(chatId, `💰 ¿Es este tu PayPal?\n\n*${paypalRegistrado}*`, {
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: '✅ Sí, es correcto', callback_data: `confirmar_review_${paypalRegistrado}` },
-                { text: '✏️ Modificar', callback_data: 'modificar_paypal_review' }
-              ],
-              [{ text: '❌ Cancelar', callback_data: 'menu_principal' }]
-            ]
-          }
-        });
-      } else {
-        state.step = 'awaiting_paypal_review';
-        bot.sendMessage(chatId, '💰 Envía tu PayPal:', {
-          reply_markup: getBotonesControl()
-        });
-      }
-      
-    } else if (state.step === 'awaiting_paypal_review') {
-      const paypal = text;
-      await procesarReviewSubida(chatId, state.numeroPedido, state.reviewLink, paypal, msg.from.username || msg.from.first_name);
-      limpiarEstadoUsuario(chatId);
-      
-    // MARCAR PAGADO (ADMIN)
-    } else if (state.step === 'awaiting_numero_pagar') {
-      const numeroPedido = text;
-      
-      const sheet = doc.sheetsByIndex[1];
-      const rows = await sheet.getRows();
-      const row = rows.find(r => r.get('NUMERO') === numeroPedido);
-      
-      if (row) {
-        state.numeroPedido = numeroPedido;
-        state.paypalUsuario = row.get('PAYPAL');
-        state.nickUsuario = row.get('NICK');
-        
-        bot.sendMessage(chatId, `💰 *MARCAR COMO PAGADO*\n\nPedido: *${numeroPedido}*\nUsuario: ${state.nickUsuario}\nPayPal: ${state.paypalUsuario}\n\n¿Deseas enviar comprobante de pago?`, {
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: '📸 Sí, enviar comprobante', callback_data: `enviar_comprobante_${numeroPedido}` }
-              ],
-              [
-                { text: '❌ No, solo marcar pagado', callback_data: `no_comprobante_${numeroPedido}` }
-              ],
-              [{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]
-            ]
-          }
-        });
-      } else {
-        bot.sendMessage(chatId, '❌ No se encontró el pedido.', {
-          reply_markup: getBotonesControl()
-        });
-        limpiarEstadoUsuario(chatId);
-      }
-      
-    // COMPROBANTE DE PAGO
-    } else if (state.step === 'awaiting_comprobante_pago') {
-      let fileId = null;
-      let tipoArchivo = null;
-      
-      if (msg.photo) {
-        fileId = msg.photo[msg.photo.length - 1].file_id;
-        tipoArchivo = 'photo';
-      } else if (msg.document) {
-        fileId = msg.document.file_id;
-        tipoArchivo = 'document';
-      }
-      
-      if (fileId) {
-        try {
-          // Actualizar estado en Google Sheets
-          const sheet = doc.sheetsByIndex[1];
-          const rows = await sheet.getRows();
-          const row = rows.find(r => r.get('NUMERO') === state.numeroPedido);
-          
-          if (row) {
-            row.set('ESTADO', 'Review Pagada');
-            await row.save();
-            
-            // Aplicar color azul oscuro
-            await aplicarColorEstado(sheet, row.rowNumber, 'Review Pagada');
-            
-            // Sincronizar con hojas de vendedores
-            for (const vendedor of VENDEDORES) {
-              const hojaVendedor = doc.sheetsByTitle[vendedor];
-              if (hojaVendedor) {
-                const rowsVendedor = await hojaVendedor.getRows();
-                const rowVendedor = rowsVendedor.find(r => r.get('NUMERO') === state.numeroPedido);
-                
-                if (rowVendedor) {
-                  rowVendedor.set('ESTADO', 'Review Pagada');
-                  await rowVendedor.save();
-                  await aplicarColorEstado(hojaVendedor, rowVendedor.rowNumber, 'Review Pagada');
-                }
-              }
-            }
-            
-            // Buscar chat_id del usuario por su PayPal
-            const userChatId = userChatIds.get(state.paypalUsuario);
-            
-            if (userChatId) {
-              try {
-                // Enviar comprobante al usuario
-                const mensajeUsuario = `💰 *PEDIDO REEMBOLSADO*\n\n📦 Pedido: *${state.numeroPedido}*\n\n✅ Tu pago ha sido procesado.\n\nAquí está el comprobante:`;
-                
-                if (tipoArchivo === 'photo') {
-                  await bot.sendPhoto(userChatId, fileId, {
-                    caption: mensajeUsuario,
-                    parse_mode: 'Markdown'
-                  });
-                } else {
-                  await bot.sendDocument(userChatId, fileId, {
-                    caption: mensajeUsuario,
-                    parse_mode: 'Markdown'
-                  });
-                }
-                
-                bot.sendMessage(chatId, `✅ Pedido *${state.numeroPedido}* marcado como pagado.\n\n🔵 Cambió a color azul oscuro.\n\n📤 Comprobante enviado exitosamente a @${state.nickUsuario}`, {
-                  parse_mode: 'Markdown',
-                  reply_markup: {
-                    inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
-                  }
-                });
-                
-              } catch (error) {
-                console.error('Error enviando al usuario:', error);
-                bot.sendMessage(chatId, `✅ Pedido marcado como pagado.\n\n⚠️ No se pudo enviar automáticamente a @${state.nickUsuario}\n\nReenvía manualmente el comprobante.`, {
-                  parse_mode: 'Markdown',
-                  reply_markup: {
-                    inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
-                  }
-                });
-              }
-            } else {
-              // Si no hay chat_id guardado
-              if (tipoArchivo === 'photo') {
-                await bot.sendPhoto(chatId, fileId, {
-                  caption: `✅ Comprobante guardado.\n\n⚠️ Usuario no ha iniciado el bot.\nReenvía esta imagen manualmente a: @${state.nickUsuario}`
-                });
-              } else {
-                await bot.sendDocument(chatId, fileId, {
-                  caption: `✅ Comprobante guardado.\n\n⚠️ Usuario no ha iniciado el bot.\nReenvía este archivo manualmente a: @${state.nickUsuario}`
-                });
-              }
-              
-              bot.sendMessage(chatId, `✅ Pedido *${state.numeroPedido}* marcado como pagado.\n\n🔵 Cambió a color azul oscuro.`, {
-                parse_mode: 'Markdown',
-                reply_markup: {
-                  inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
-                }
-              });
-            }
-          }
-          
-          limpiarEstadoUsuario(chatId);
-          
-        } catch (error) {
-          console.error('❌ Error procesando comprobante:', error);
-          bot.sendMessage(chatId, '❌ Error al procesar el comprobante.');
-        }
-      } else {
-        bot.sendMessage(chatId, '⚠️ Por favor envía una imagen o documento válido.', {
-          reply_markup: getBotonesControl()
-        });
-      }
-    }
-    
-  } catch (error) {
-    bot.sendMessage(chatId, '❌ Error al procesar tu solicitud.', {
-      reply_markup: removerTeclado()
-    });
-    console.error('Error en manejador:', error);
-    limpiarEstadoUsuario(chatId);
-  }
-});
-
-// Servidor Express
-app.get('/', (req, res) => {
-  res.send('Bot AmazonFlow - Restaurado con sincronización amarillo');
-});
-
-app.listen(PORT, () => {
-  console.log(`🌐 Servidor escuchando en puerto ${PORT}`);
-});
-
-// Iniciar
-console.log('🔍 Verificando conexión con Google Sheets...');
-initSheet();
