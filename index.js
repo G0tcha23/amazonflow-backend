@@ -697,3 +697,565 @@ async function finalizarPagoSinComprobante(chatId, numeroPedido) {
         inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
       }
     });
+    
+    limpiarEstadoUsuario(chatId);
+    
+  } catch (error) {
+    console.error('❌ Error finalizando pago:', error);
+    bot.sendMessage(chatId, '❌ Error al procesar el pago.');
+  }
+}
+
+// Mostrar reviews pendientes
+async function mostrarReviewsPendientes(chatId) {
+  try {
+    const sheet = doc.sheetsByIndex[1];
+    const rows = await sheet.getRows();
+    
+    if (!rows || rows.length === 0) {
+      bot.sendMessage(chatId, '✅ No hay reviews pendientes de enviar al seller.', {
+        reply_markup: {
+          inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+        }
+      });
+      return;
+    }
+    
+    const reviewsPendientes = rows.filter(row => {
+      const estado = row.get('ESTADO');
+      return estado && estado.trim() === 'Review Subida';
+    });
+    
+    if (reviewsPendientes.length === 0) {
+      bot.sendMessage(chatId, '✅ No hay reviews pendientes de enviar al seller.', {
+        reply_markup: {
+          inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+        }
+      });
+      return;
+    }
+    
+    let mensaje = `🔔 *REVIEWS PENDIENTES DE ENVIAR* (${reviewsPendientes.length})\n\n`;
+    const botones = [];
+    
+    reviewsPendientes.forEach((row, index) => {
+      const numero = row.get('NUMERO') || 'N/A';
+      const review = row.get('REVIEW') || 'N/A';
+      const nick = row.get('NICK') || 'N/A';
+      const paypal = row.get('PAYPAL') || 'N/A';
+      
+      mensaje += `${index + 1}️⃣ *Pedido:* ${numero}\n`;
+      mensaje += `   👤 Usuario: ${nick}\n`;
+      mensaje += `   ⭐ Review: ${review}\n`;
+      mensaje += `   💰 PayPal: ${paypal}\n\n`;
+      
+      botones.push([{ text: `📤 Enviar #${numero}`, callback_data: `enviar_review_${numero}` }]);
+    });
+    
+    botones.push([{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]);
+    
+    bot.sendMessage(chatId, mensaje, {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: botones }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error en mostrarReviewsPendientes:', error);
+    bot.sendMessage(chatId, '❌ Error al obtener reviews pendientes: ' + error.message);
+  }
+}
+
+// Procesar review subida
+async function procesarReviewSubida(chatId, numeroPedido, reviewLink, paypal, nick) {
+  try {
+    const sheet = doc.sheetsByIndex[1];
+    const rows = await sheet.getRows();
+    const row = rows.find(r => r.get('NUMERO') === numeroPedido && r.get('PAYPAL') === paypal);
+    
+    if (row) {
+      row.set('REVIEW', reviewLink);
+      row.set('ESTADO', 'Review Subida');
+      await row.save();
+      
+      await aplicarColorEstado(sheet, row.rowNumber, 'Review Subida');
+      
+      // Sincronizar con hojas de vendedores
+      for (const vendedor of VENDEDORES) {
+        const hojaVendedor = doc.sheetsByTitle[vendedor];
+        if (hojaVendedor) {
+          const rowsVendedor = await hojaVendedor.getRows();
+          const rowVendedor = rowsVendedor.find(r => r.get('NUMERO') === numeroPedido);
+          
+          if (rowVendedor) {
+            rowVendedor.set('REVIEW', reviewLink);
+            rowVendedor.set('ESTADO', 'Review Subida');
+            await rowVendedor.save();
+            await aplicarColorEstado(hojaVendedor, rowVendedor.rowNumber, 'Review Subida');
+          }
+        }
+      }
+      
+      bot.sendMessage(chatId, '✅ Review subida correctamente.\n\nTu pedido está siendo procesado.', {
+        reply_markup: {
+          inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+        }
+      });
+      
+      await notificarNuevaReview({
+        numero: numeroPedido,
+        review: reviewLink,
+        paypal: paypal,
+        nick: nick
+      });
+      
+    } else {
+      bot.sendMessage(chatId, '❌ No se encontró el pedido.', {
+        reply_markup: getBotonesControl()
+      });
+    }
+  } catch (error) {
+    console.error('Error procesando review:', error);
+    bot.sendMessage(chatId, '❌ Error al procesar la review.');
+  }
+}
+
+// Marcar review como enviada al seller
+async function marcarReviewEnviada(chatId, numeroPedido) {
+  try {
+    const sheet = doc.sheetsByIndex[1];
+    const rows = await sheet.getRows();
+    
+    const row = rows.find(r => r.get('NUMERO') === numeroPedido);
+    
+    if (!row) {
+      bot.sendMessage(chatId, '❌ No se encontró el pedido.');
+      return;
+    }
+    
+    row.set('ESTADO', 'Review Enviada');
+    await row.save();
+    
+    const rowIndex = row.rowNumber;
+    await aplicarColorEstado(sheet, rowIndex, 'Review Enviada');
+    
+    // Sincronizar con hojas de vendedores
+    for (const vendedor of VENDEDORES) {
+      const hojaVendedor = doc.sheetsByTitle[vendedor];
+      if (hojaVendedor) {
+        const rowsVendedor = await hojaVendedor.getRows();
+        const rowVendedor = rowsVendedor.find(r => r.get('NUMERO') === numeroPedido);
+        
+        if (rowVendedor) {
+          rowVendedor.set('ESTADO', 'Review Enviada');
+          await rowVendedor.save();
+          await aplicarColorEstado(hojaVendedor, rowVendedor.rowNumber, 'Review Enviada');
+        }
+      }
+    }
+    
+    bot.sendMessage(chatId, `✅ Review del pedido *${numeroPedido}* marcada como enviada al seller.\n\n💙 Cambió a color azul celeste.`, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🔔 Ver Pendientes', callback_data: 'reviews_pendientes' }],
+          [{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]
+        ]
+      }
+    });
+    
+  } catch (error) {
+    bot.sendMessage(chatId, '❌ Error al actualizar el estado.');
+    console.error(error);
+  }
+}
+
+// Notificar admins sobre nueva review
+async function notificarNuevaReview(datosReview) {
+  const mensaje = `🔔 *NUEVA REVIEW RECIBIDA*\n\n` +
+    `📦 *Pedido:* ${datosReview.numero}\n` +
+    `⭐ *Review:* ${datosReview.review}\n` +
+    `💰 *PayPal:* ${datosReview.paypal}\n` +
+    `👤 *Usuario:* ${datosReview.nick}\n\n` +
+    `⚠️ *Pendiente de enviar al seller*`;
+  
+  for (const adminId of ADMIN_CHAT_IDS) {
+    bot.sendMessage(adminId, mensaje, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '📤 Marcar como Enviada', callback_data: `enviar_review_${datosReview.numero}` }],
+          [{ text: '🔔 Ver Todas Pendientes', callback_data: 'reviews_pendientes' }]
+        ]
+      }
+    });
+  }
+}
+
+// Manejador de mensajes
+bot.on('message', async (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text;
+  const esAdmin = ADMIN_CHAT_IDS.includes(chatId);
+  
+  if (text === '❌ CANCELAR') {
+    limpiarEstadoUsuario(chatId);
+    bot.sendMessage(chatId, '❌ Operación cancelada.', {
+      reply_markup: removerTeclado()
+    });
+    setTimeout(() => mostrarMenuPrincipal(chatId, esAdmin), 500);
+    return;
+  }
+  
+  if (text === '🏠 MENÚ PRINCIPAL') {
+    limpiarEstadoUsuario(chatId);
+    mostrarMenuPrincipal(chatId, esAdmin);
+    return;
+  }
+  
+  const state = userStates[chatId];
+  
+  if (!state) return;
+  
+  establecerTimeout(chatId);
+  
+  try {
+    // REGISTRO
+    if (state.step === 'awaiting_perfil_amazon') {
+      state.perfilAmazon = text;
+      state.step = 'awaiting_paypal_registro';
+      bot.sendMessage(chatId, '💰 Ahora envía tu PayPal:', {
+        reply_markup: getBotonesControl()
+      });
+      
+    } else if (state.step === 'awaiting_paypal_registro') {
+      state.paypal = text;
+      state.step = 'awaiting_intermediarios';
+      bot.sendMessage(chatId, '🤝 Envía 2-3 intermediarios con los que trabajas:', {
+        reply_markup: getBotonesControl()
+      });
+      
+    } else if (state.step === 'awaiting_intermediarios') {
+      const intermediarios = text;
+      
+      const sheetRegistro = doc.sheetsByIndex[0];
+      await sheetRegistro.addRow({
+        FECHA: new Date().toLocaleDateString('es-ES'),
+        USUARIO: msg.from.username || msg.from.first_name,
+        PERFIL: state.perfilAmazon,
+        PAYPAL: state.paypal,
+        INTERMEDIARIOS: intermediarios,
+        CHAT_ID: chatId.toString()
+      });
+      
+      // Actualizar cache
+      registeredUsers.set(state.perfilAmazon.toLowerCase(), {
+        perfil: state.perfilAmazon,
+        paypal: state.paypal,
+        usuario: msg.from.username || msg.from.first_name
+      });
+      
+      // Guardar chat_id
+      userChatIds.set(state.paypal, chatId);
+      
+      bot.sendMessage(chatId, '✅ Registro completado correctamente.\n\nYa puedes hacer pedidos.', {
+        reply_markup: {
+          inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+        }
+      });
+      
+      limpiarEstadoUsuario(chatId);
+      
+    // HACER PEDIDO
+    } else if (state.step === 'awaiting_numero_pedido') {
+      state.numeroPedido = text;
+      state.step = 'awaiting_captura';
+      bot.sendMessage(chatId, '📸 Envía la captura del pedido:', {
+        reply_markup: getBotonesControl()
+      });
+      
+    } else if (state.step === 'awaiting_captura') {
+      let fileId = null;
+      let imagenUrl = null;
+      let tipoImagen = null;
+      
+      if (msg.photo) {
+        fileId = msg.photo[msg.photo.length - 1].file_id;
+        tipoImagen = 'photo';
+      } else if (msg.document) {
+        const mimeType = msg.document.mime_type || '';
+        const fileName = msg.document.file_name || '';
+        
+        const esImagen = mimeType.startsWith('image/') || 
+                        /\.(jpg|jpeg|png|gif|bmp|webp|heic|heif|tiff)$/i.test(fileName);
+        
+        if (esImagen) {
+          fileId = msg.document.file_id;
+          tipoImagen = 'document';
+        }
+      } else if (msg.sticker) {
+        fileId = msg.sticker.file_id;
+        tipoImagen = 'sticker';
+      }
+      
+      if (fileId) {
+        imagenUrl = `https://api.telegram.org/file/bot${token}/${fileId}`;
+        state.imagenUrl = imagenUrl;
+        state.fileId = fileId;
+        state.tipoImagen = tipoImagen;
+        state.nick = msg.from.username || msg.from.first_name;
+        
+        // Buscar PayPal del usuario registrado
+        const sheetRegistro = doc.sheetsByIndex[0];
+        const rowsRegistro = await sheetRegistro.getRows();
+        const userRegistro = rowsRegistro.find(r => {
+          const usuario = r.get('USUARIO');
+          return usuario && usuario.toLowerCase() === state.nick.toLowerCase();
+        });
+        
+        if (userRegistro && userRegistro.get('PAYPAL')) {
+          const paypalRegistrado = userRegistro.get('PAYPAL');
+          state.paypalSugerido = paypalRegistrado;
+          
+          bot.sendMessage(chatId, `✅ Imagen recibida correctamente\n\n💰 ¿Es este tu PayPal?\n\n*${paypalRegistrado}*`, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: '✅ Sí, es correcto', callback_data: `confirmar_paypal_${paypalRegistrado}` },
+                  { text: '✏️ Modificar', callback_data: 'modificar_paypal' }
+                ],
+                [{ text: '❌ Cancelar', callback_data: 'menu_principal' }]
+              ]
+            }
+          });
+        } else {
+          state.step = 'awaiting_paypal_pedido';
+          bot.sendMessage(chatId, `✅ Imagen recibida correctamente\n\n💰 Envía tu PayPal:`, {
+            reply_markup: getBotonesControl()
+          });
+        }
+      } else {
+        bot.sendMessage(chatId, '⚠️ Por favor envía una imagen válida.', {
+          reply_markup: getBotonesControl()
+        });
+      }
+      
+    } else if (state.step === 'awaiting_nuevo_paypal' || state.step === 'awaiting_paypal_pedido') {
+      const paypal = text;
+      await confirmarPedidoConPayPal(chatId, paypal);
+      
+    // SUBIR REVIEW
+    } else if (state.step === 'awaiting_review_link') {
+      state.reviewLink = text;
+      state.step = 'awaiting_numero_review';
+      bot.sendMessage(chatId, '🔢 Envía el número de pedido:', {
+        reply_markup: getBotonesControl()
+      });
+      
+    } else if (state.step === 'awaiting_numero_review') {
+      state.numeroPedido = text;
+      state.nick = msg.from.username || msg.from.first_name;
+      
+      // Buscar PayPal automáticamente
+      const sheetRegistro = doc.sheetsByIndex[0];
+      const rowsRegistro = await sheetRegistro.getRows();
+      const userRegistro = rowsRegistro.find(r => {
+        const usuario = r.get('USUARIO');
+        return usuario && usuario.toLowerCase() === state.nick.toLowerCase();
+      });
+      
+      if (userRegistro && userRegistro.get('PAYPAL')) {
+        const paypalRegistrado = userRegistro.get('PAYPAL');
+        state.paypalSugerido = paypalRegistrado;
+        
+        bot.sendMessage(chatId, `💰 ¿Es este tu PayPal?\n\n*${paypalRegistrado}*`, {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '✅ Sí, es correcto', callback_data: `confirmar_review_${paypalRegistrado}` },
+                { text: '✏️ Modificar', callback_data: 'modificar_paypal_review' }
+              ],
+              [{ text: '❌ Cancelar', callback_data: 'menu_principal' }]
+            ]
+          }
+        });
+      } else {
+        state.step = 'awaiting_paypal_review';
+        bot.sendMessage(chatId, '💰 Envía tu PayPal:', {
+          reply_markup: getBotonesControl()
+        });
+      }
+      
+    } else if (state.step === 'awaiting_paypal_review') {
+      const paypal = text;
+      await procesarReviewSubida(chatId, state.numeroPedido, state.reviewLink, paypal, msg.from.username || msg.from.first_name);
+      limpiarEstadoUsuario(chatId);
+      
+    // MARCAR PAGADO (ADMIN)
+    } else if (state.step === 'awaiting_numero_pagar') {
+      const numeroPedido = text;
+      
+      const sheet = doc.sheetsByIndex[1];
+      const rows = await sheet.getRows();
+      const row = rows.find(r => r.get('NUMERO') === numeroPedido);
+      
+      if (row) {
+        state.numeroPedido = numeroPedido;
+        state.paypalUsuario = row.get('PAYPAL');
+        state.nickUsuario = row.get('NICK');
+        
+        bot.sendMessage(chatId, `💰 *MARCAR COMO PAGADO*\n\nPedido: *${numeroPedido}*\nUsuario: ${state.nickUsuario}\nPayPal: ${state.paypalUsuario}\n\n¿Deseas enviar comprobante de pago?`, {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '📸 Sí, enviar comprobante', callback_data: `enviar_comprobante_${numeroPedido}` }
+              ],
+              [
+                { text: '❌ No, solo marcar pagado', callback_data: `no_comprobante_${numeroPedido}` }
+              ],
+              [{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]
+            ]
+          }
+        });
+      } else {
+        bot.sendMessage(chatId, '❌ No se encontró el pedido.', {
+          reply_markup: getBotonesControl()
+        });
+        limpiarEstadoUsuario(chatId);
+      }
+      
+    // COMPROBANTE DE PAGO
+    } else if (state.step === 'awaiting_comprobante_pago') {
+      let fileId = null;
+      let tipoArchivo = null;
+      
+      if (msg.photo) {
+        fileId = msg.photo[msg.photo.length - 1].file_id;
+        tipoArchivo = 'photo';
+      } else if (msg.document) {
+        fileId = msg.document.file_id;
+        tipoArchivo = 'document';
+      }
+      
+      if (fileId) {
+        try {
+          // Actualizar estado en Google Sheets
+          const sheet = doc.sheetsByIndex[1];
+          const rows = await sheet.getRows();
+          const row = rows.find(r => r.get('NUMERO') === state.numeroPedido);
+          
+          if (row) {
+            row.set('ESTADO', 'Review Pagada');
+            await row.save();
+            
+            // Aplicar color azul oscuro
+            await aplicarColorEstado(sheet, row.rowNumber, 'Review Pagada');
+            
+            // Sincronizar con hojas de vendedores
+            for (const vendedor of VENDEDORES) {
+              const hojaVendedor = doc.sheetsByTitle[vendedor];
+              if (hojaVendedor) {
+                const rowsVendedor = await hojaVendedor.getRows();
+                const rowVendedor = rowsVendedor.find(r => r.get('NUMERO') === state.numeroPedido);
+                
+                if (rowVendedor) {
+                  rowVendedor.set('ESTADO', 'Review Pagada');
+                  await rowVendedor.save();
+                  await aplicarColorEstado(hojaVendedor, rowVendedor.rowNumber, 'Review Pagada');
+                }
+              }
+            }
+            
+            // Buscar chat_id del usuario por su PayPal
+            const userChatId = userChatIds.get(state.paypalUsuario);
+            
+            if (userChatId) {
+              try {
+                // Enviar comprobante al usuario
+                const mensajeUsuario = `💰 *PEDIDO REEMBOLSADO*\n\n📦 Pedido: *${state.numeroPedido}*\n\n✅ Tu pago ha sido procesado.\n\nAquí está el comprobante:`;
+                
+                if (tipoArchivo === 'photo') {
+                  await bot.sendPhoto(userChatId, fileId, {
+                    caption: mensajeUsuario,
+                    parse_mode: 'Markdown'
+                  });
+                } else {
+                  await bot.sendDocument(userChatId, fileId, {
+                    caption: mensajeUsuario,
+                    parse_mode: 'Markdown'
+                  });
+                }
+                
+                bot.sendMessage(chatId, `✅ Pedido *${state.numeroPedido}* marcado como pagado.\n\n🔵 Cambió a color azul oscuro.\n\n📤 Comprobante enviado exitosamente a @${state.nickUsuario}`, {
+                  parse_mode: 'Markdown',
+                  reply_markup: {
+                    inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+                  }
+                });
+                
+              } catch (error) {
+                console.error('Error enviando al usuario:', error);
+                bot.sendMessage(chatId, `✅ Pedido marcado como pagado.\n\n⚠️ No se pudo enviar automáticamente a @${state.nickUsuario}\n\nReenvía manualmente el comprobante.`, {
+                  parse_mode: 'Markdown',
+                  reply_markup: {
+                    inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+                  }
+                });
+              }
+            } else {
+              // Si no hay chat_id guardado
+              if (tipoArchivo === 'photo') {
+                await bot.sendPhoto(chatId, fileId, {
+                  caption: `✅ Comprobante guardado.\n\n⚠️ Usuario no ha iniciado el bot.\nReenvía esta imagen manualmente a: @${state.nickUsuario}`
+                });
+              } else {
+                await bot.sendDocument(chatId, fileId, {
+                  caption: `✅ Comprobante guardado.\n\n⚠️ Usuario no ha iniciado el bot.\nReenvía este archivo manualmente a: @${state.nickUsuario}`
+                });
+              }
+              
+              bot.sendMessage(chatId, `✅ Pedido *${state.numeroPedido}* marcado como pagado.\n\n🔵 Cambió a color azul oscuro.`, {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                  inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+                }
+              });
+            }
+          }
+          
+          limpiarEstadoUsuario(chatId);
+          
+        } catch (error) {
+          console.error('❌ Error procesando comprobante:', error);
+          bot.sendMessage(chatId, '❌ Error al procesar el comprobante.');
+        }
+      } else {
+        bot.sendMessage(chatId, '⚠️ Por favor envía una imagen o documento válido.', {
+          reply_markup: getBotonesControl()
+        });
+      }
+    }
+    
+  } catch (error) {
+    bot.sendMessage(chatId, '❌ Error al procesar tu solicitud.', {
+      reply_markup: removerTeclado()
+    });
+    console.error('Error en manejador:', error);
+    limpiarEstadoUsuario(chatId);
+  }
+});
+
+// Servidor Express
+app.get('/', (req, res) => {
+  res.send('Bot AmazonFlow - Sincronización de colores completa');
+});
+
+app.listen(PORT, () => {
+  console.log(`🌐 Servidor escuchando en puerto ${PORT}`);
+});
+
+// Iniciar
+console.log('🔍 Verificando conexión con Google Sheets...');
+initSheet();
