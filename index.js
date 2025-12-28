@@ -382,6 +382,7 @@ async function detectarCambiosPagado() {
       }
     }
     
+    // Verificar cambios en hojas de vendedores Y sincronizar colores
     for (const vendedor of VENDEDORES) {
       const hojaVendedor = doc.sheetsByTitle[vendedor];
       if (hojaVendedor) {
@@ -390,16 +391,28 @@ async function detectarCambiosPagado() {
         for (const rowVendedor of rowsVendedor) {
           const numero = rowVendedor.get('NUMERO');
           const pagadoVendedor = rowVendedor.get('PAGADO');
+          const estadoVendedor = rowVendedor.get('ESTADO');
           
           if (!numero) continue;
           
           const rowPrincipal = rowsPrincipal.find(r => r.get('NUMERO') === numero);
           if (rowPrincipal) {
             const pagadoPrincipal = rowPrincipal.get('PAGADO');
+            const estadoPrincipal = rowPrincipal.get('ESTADO');
             
+            // Si PAGADO cambió en hoja vendedor, sincronizar a todas
             if (pagadoVendedor !== pagadoPrincipal) {
               console.log(`🔄 Cambio detectado en ${vendedor}: ${numero} → PAGADO: ${pagadoVendedor}`);
               await sincronizarColumnaPagado(numero, pagadoVendedor || 'PENDIENTE', vendedor);
+            }
+            
+            // Si el estado es Completado en vendedor pero no en principal, copiar
+            if (estadoVendedor === 'Completado' && estadoPrincipal !== 'Completado') {
+              console.log(`🟡 Copiando Completado de ${vendedor} a Hoja 2: ${numero}`);
+              rowPrincipal.set('ESTADO', 'Completado');
+              rowPrincipal.set('PAGADO', 'PAGADO');
+              await rowPrincipal.save();
+              await aplicarColorEstado(sheetPrincipal, rowPrincipal.rowNumber, 'Completado');
             }
           }
         }
@@ -593,6 +606,23 @@ bot.on('callback_query', async (query) => {
   } else if (data === 'menu_principal') {
     limpiarEstadoUsuario(chatId);
     mostrarMenuPrincipal(chatId, esAdmin);
+    
+  } else if (data.startsWith('confirmar_review_')) {
+    const paypal = data.replace('confirmar_review_', '');
+    const state = userStates[chatId];
+    if (state) {
+      await procesarReviewSubida(chatId, state.numeroPedido, state.reviewLink, paypal, state.nick);
+      limpiarEstadoUsuario(chatId);
+    }
+    
+  } else if (data === 'modificar_paypal_review') {
+    const state = userStates[chatId];
+    if (state) {
+      state.step = 'awaiting_paypal_review';
+      bot.sendMessage(chatId, '💰 Envía tu nuevo PayPal:', {
+        reply_markup: getBotonesControl()
+      });
+    }
     
   } else if (data.startsWith('confirmar_paypal_')) {
     const paypal = data.replace('confirmar_paypal_', '');
@@ -797,6 +827,60 @@ async function mostrarReviewsPendientes(chatId) {
   } catch (error) {
     console.error('❌ Error en mostrarReviewsPendientes:', error);
     bot.sendMessage(chatId, '❌ Error al obtener reviews pendientes: ' + error.message);
+  }
+}
+
+// Procesar review subida (función separada para reutilizar)
+async function procesarReviewSubida(chatId, numeroPedido, reviewLink, paypal, nick) {
+  try {
+    const sheet = doc.sheetsByIndex[1];
+    const rows = await sheet.getRows();
+    const row = rows.find(r => r.get('NUMERO') === numeroPedido && r.get('PAYPAL') === paypal);
+    
+    if (row) {
+      row.set('REVIEW', reviewLink);
+      row.set('ESTADO', 'Review Subida');
+      await row.save();
+      
+      await aplicarColorEstado(sheet, row.rowNumber, 'Review Subida');
+      
+      // Sincronizar con hojas de vendedores
+      for (const vendedor of VENDEDORES) {
+        const hojaVendedor = doc.sheetsByTitle[vendedor];
+        if (hojaVendedor) {
+          const rowsVendedor = await hojaVendedor.getRows();
+          const rowVendedor = rowsVendedor.find(r => r.get('NUMERO') === numeroPedido);
+          
+          if (rowVendedor) {
+            rowVendedor.set('REVIEW', reviewLink);
+            rowVendedor.set('ESTADO', 'Review Subida');
+            await rowVendedor.save();
+            await aplicarColorEstado(hojaVendedor, rowVendedor.rowNumber, 'Review Subida');
+          }
+        }
+      }
+      
+      bot.sendMessage(chatId, '✅ Review subida correctamente.\n\nTu pedido está siendo procesado.', {
+        reply_markup: {
+          inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+        }
+      });
+      
+      await notificarNuevaReview({
+        numero: numeroPedido,
+        review: reviewLink,
+        paypal: paypal,
+        nick: nick
+      });
+      
+    } else {
+      bot.sendMessage(chatId, '❌ No se encontró el pedido.', {
+        reply_markup: getBotonesControl()
+      });
+    }
+  } catch (error) {
+    console.error('Error procesando review:', error);
+    bot.sendMessage(chatId, '❌ Error al procesar la review.');
   }
 }
 
@@ -1035,14 +1119,14 @@ bot.on('message', async (msg) => {
       
     } else if (state.step === 'awaiting_numero_review') {
       state.numeroPedido = text;
+      state.nick = msg.from.username || msg.from.first_name;
       
       // MEJORA: Buscar PayPal automáticamente
       const sheetRegistro = doc.sheetsByIndex[0];
       const rowsRegistro = await sheetRegistro.getRows();
-      const nick = msg.from.username || msg.from.first_name;
       const userRegistro = rowsRegistro.find(r => {
         const usuario = r.get('USUARIO');
-        return usuario && usuario.toLowerCase() === nick.toLowerCase();
+        return usuario && usuario.toLowerCase() === state.nick.toLowerCase();
       });
       
       if (userRegistro && userRegistro.get('PAYPAL')) {
@@ -1054,7 +1138,7 @@ bot.on('message', async (msg) => {
           reply_markup: {
             inline_keyboard: [
               [
-                { text: '✅ Sí, es correcto', callback_data: `confirmar_paypal_review_${paypalRegistrado}` },
+                { text: '✅ Sí, es correcto', callback_data: `confirmar_review_${paypalRegistrado}` },
                 { text: '✏️ Modificar', callback_data: 'modificar_paypal_review' }
               ],
               [{ text: '❌ Cancelar', callback_data: 'menu_principal' }]
