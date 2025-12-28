@@ -231,14 +231,20 @@ async function aplicarColorEstado(sheet, rowIndex, estado) {
     
     await sheet.loadCells(`A${rowIndex}:M${rowIndex}`);
     
+    // APLICAR COLOR DE FONDO Y TEXTO NEGRO EN TODAS LAS CELDAS
     for (let i = 0; i < 13; i++) {
       const cell = sheet.getCell(rowIndex - 1, i);
       cell.backgroundColor = colorConfig.bg;
-      cell.textFormat = { foregroundColor: { red: 0, green: 0, blue: 0 } };
+      
+      // FORZAR TEXTO NEGRO
+      if (!cell.textFormat) {
+        cell.textFormat = {};
+      }
+      cell.textFormat.foregroundColor = { red: 0, green: 0, blue: 0 };
     }
     
     await sheet.saveUpdatedCells();
-    console.log(`🎨 Color aplicado en ${sheet.title}, fila ${rowIndex}: ${estado} ${colorConfig.emoji}`);
+    console.log(`🎨 Color ${estado} aplicado en ${sheet.title}, fila ${rowIndex} - TEXTO NEGRO`);
   } catch (error) {
     console.error(`❌ Error aplicando color en fila ${rowIndex}:`, error.message);
   }
@@ -297,11 +303,16 @@ async function sincronizarColoresAmarillos() {
                 for (let i = 0; i < 13; i++) {
                   const cell = sheetPrincipal.getCell(rowPrincipal.rowNumber - 1, i);
                   cell.backgroundColor = { red: 1, green: 1, blue: 0 };
-                  cell.textFormat = { foregroundColor: { red: 0, green: 0, blue: 0 } };
+                  
+                  // FORZAR TEXTO NEGRO
+                  if (!cell.textFormat) {
+                    cell.textFormat = {};
+                  }
+                  cell.textFormat.foregroundColor = { red: 0, green: 0, blue: 0 };
                 }
                 
                 await sheetPrincipal.saveUpdatedCells();
-                console.log(`✅ Amarillo aplicado en Hoja 2: ${numero}`);
+                console.log(`✅ Amarillo + TEXTO NEGRO aplicado en Hoja 2: ${numero}`);
               }
             }
           }
