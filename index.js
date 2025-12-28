@@ -1,4 +1,4 @@
-// Detectar cambios en columna PAGADO y colores amarillos (MEJORADO Y SEGURO)
+// Detectar colores amarillos en hojas de vendedores (SOLO AMARILLO)
 async function detectarCambiosPagado() {
   try {
     const sheetPrincipal = doc.sheetsByIndex[1];
@@ -9,7 +9,7 @@ async function detectarCambiosPagado() {
     
     const rowsPrincipal = await sheetPrincipal.getRows();
     
-    // Verificar colores amarillos en hojas de vendedores
+    // SOLO verificar colores amarillos en hojas de vendedores
     for (const vendedor of VENDEDORES) {
       try {
         const hojaVendedor = doc.sheetsByTitle[vendedor];
@@ -45,40 +45,40 @@ async function detectarCambiosPagado() {
             if (celdasAmarillas >= 10) {
               const estadoActualVendedor = rowVendedor.get('ESTADO');
               
-              console.log(`🟡 Fila amarilla detectada en ${vendedor}: ${numero} (${celdasAmarillas}/13 celdas)`);
-              
-              // Actualizar estado en hoja vendedor si no es Completado
+              // Solo procesar si NO está ya en Completado (evitar bucle)
               if (estadoActualVendedor !== 'Completado') {
+                console.log(`🟡 Fila amarilla detectada en ${vendedor}: ${numero} (${celdasAmarillas}/13 celdas)`);
+                
+                // Actualizar estado en hoja vendedor
                 rowVendedor.set('ESTADO', 'Completado');
                 rowVendedor.set('PAGADO', 'PAGADO');
                 await rowVendedor.save();
                 console.log(`✅ Estado actualizado en ${vendedor}: ${numero} → Completado`);
-              }
-              
-              // Asegurar que el texto sea negro en hoja vendedor
-              for (let i = 0; i < 13; i++) {
-                const cell = hojaVendedor.getCell(rowVendedor.rowNumber - 1, i);
-                cell.textFormat = { foregroundColor: { red: 0, green: 0, blue: 0 } };
-              }
-              await hojaVendedor.saveUpdatedCells();
-              
-              // Sincronizar con Hoja 2
-              const rowPrincipal = rowsPrincipal.find(r => r.get('NUMERO') === numero);
-              if (rowPrincipal) {
-                const estadoPrincipal = rowPrincipal.get('ESTADO');
-                const pagadoPrincipal = rowPrincipal.get('PAGADO');
                 
-                // Si Hoja 2 no está en Completado o no es PAGADO, actualizar
-                if (estadoPrincipal !== 'Completado' || pagadoPrincipal !== 'PAGADO') {
-                  console.log(`🟡 Sincronizando a Hoja 2: ${numero} → Completado + Amarillo`);
-                  rowPrincipal.set('ESTADO', 'Completado');
-                  rowPrincipal.set('PAGADO', 'PAGADO');
-                  await rowPrincipal.save();
+                // Asegurar que el texto sea negro en hoja vendedor
+                for (let i = 0; i < 13; i++) {
+                  const cell = hojaVendedor.getCell(rowVendedor.rowNumber - 1, i);
+                  cell.textFormat = { foregroundColor: { red: 0, green: 0, blue: 0 } };
                 }
+                await hojaVendedor.saveUpdatedCells();
                 
-                // SIEMPRE aplicar el color amarillo en Hoja 2 para asegurar sincronización
-                await aplicarColorEstado(sheetPrincipal, rowPrincipal.rowNumber, 'Completado');
-                console.log(`✅ Hoja 2 actualizada: ${numero} → Amarillo con texto negro`);
+                // Sincronizar con Hoja 2
+                const rowPrincipal = rowsPrincipal.find(r => r.get('NUMERO') === numero);
+                if (rowPrincipal) {
+                  const estadoPrincipal = rowPrincipal.get('ESTADO');
+                  
+                  // Solo actualizar si NO está ya en Completado (evitar bucle)
+                  if (estadoPrincipal !== 'Completado') {
+                    console.log(`🟡 Sincronizando a Hoja 2: ${numero} → Completado + Amarillo`);
+                    rowPrincipal.set('ESTADO', 'Completado');
+                    rowPrincipal.set('PAGADO', 'PAGADO');
+                    await rowPrincipal.save();
+                    
+                    // Aplicar el color amarillo en Hoja 2
+                    await aplicarColorEstado(sheetPrincipal, rowPrincipal.rowNumber, 'Completado');
+                    console.log(`✅ Hoja 2 actualizada: ${numero} → Amarillo con texto negro`);
+                  }
+                }
               }
             }
           } catch (cellError) {
