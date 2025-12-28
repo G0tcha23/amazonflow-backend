@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 10000;
 // IDs de administradores
 const ADMIN_CHAT_IDS = [8167109];
 
-// Lista de vendedores (configura aquí tus vendedores reales)
+// Lista de vendedores
 const VENDEDORES = [
   // Ejemplos (añade los tuyos):
   // 'Vendedor1',
@@ -32,6 +32,12 @@ const doc = new GoogleSpreadsheet(process.env.GOOGLE_SHEET_ID, serviceAccountAut
 // Estados de usuario
 const userStates = {};
 const userTimeouts = {};
+
+// Cache de usuarios registrados
+const registeredUsers = new Map();
+
+// Cache de chat_ids de usuarios
+const userChatIds = new Map();
 
 // Mapeo de estados a colores
 const ESTADOS_COLORES = {
@@ -96,6 +102,9 @@ async function initSheet() {
     // Configurar validación de desplegable
     await configurarDesplegablePagado();
     
+    // Cargar usuarios registrados en cache
+    await cargarUsuariosRegistrados();
+    
     // Iniciar sincronización periódica (cada 30 segundos)
     iniciarSincronizacionPeriodica();
     
@@ -105,6 +114,47 @@ async function initSheet() {
     console.error('Stack:', error.stack);
     process.exit(1);
   }
+}
+
+// Cargar usuarios registrados en memoria
+async function cargarUsuariosRegistrados() {
+  try {
+    const sheetRegistro = doc.sheetsByIndex[0];
+    const rows = await sheetRegistro.getRows();
+    
+    registeredUsers.clear();
+    userChatIds.clear();
+    
+    for (const row of rows) {
+      const perfil = row.get('PERFIL');
+      const paypal = row.get('PAYPAL');
+      const usuario = row.get('USUARIO');
+      const chatId = row.get('CHAT_ID');
+      
+      if (perfil && paypal) {
+        registeredUsers.set(perfil.toLowerCase(), {
+          perfil: perfil,
+          paypal: paypal,
+          usuario: usuario
+        });
+        
+        if (chatId && paypal) {
+          userChatIds.set(paypal, parseInt(chatId));
+        }
+      }
+    }
+    
+    console.log(`✅ Cargados ${registeredUsers.size} usuarios registrados en cache`);
+    console.log(`✅ Cargados ${userChatIds.size} chat_ids de usuarios`);
+  } catch (error) {
+    console.error('❌ Error cargando usuarios:', error);
+  }
+}
+
+// Buscar PayPal por perfil Amazon
+function buscarPayPalPorPerfil(perfilAmazon) {
+  const userData = registeredUsers.get(perfilAmazon.toLowerCase());
+  return userData ? userData.paypal : null;
 }
 
 // Añadir columna PAGADO
@@ -125,14 +175,13 @@ async function configurarDesplegablePagado() {
   try {
     const sheetId = doc.sheetsByIndex[1].sheetId;
     
-    // Request para agregar validación de datos (desplegable)
     const requests = [{
       setDataValidation: {
         range: {
           sheetId: sheetId,
-          startRowIndex: 1, // Desde fila 2 (después del header)
-          endRowIndex: 1000, // Hasta fila 1000
-          startColumnIndex: 12, // Columna M (PAGADO)
+          startRowIndex: 1,
+          endRowIndex: 1000,
+          startColumnIndex: 12,
           endColumnIndex: 13
         },
         rule: {
@@ -214,7 +263,6 @@ async function crearHojasVendedores() {
         console.log(`✨ Hoja creada: ${vendedor}`);
       }
       
-      // SIEMPRE actualizar encabezados para asegurar columna PAGADO
       await hojaVendedor.setHeaderRow([
         'FECHA', 'ARTICULO', 'IMAGEN', 'DESCRIPCION', 'NUMERO', 
         'PAYPAL', 'PERFIL AMZ', 'REVIEW', 'NICK', 'COMISION', 'ESTADO', 'VENDEDOR', 'PAGADO'
@@ -243,22 +291,27 @@ async function formatearEncabezadosVendedor(sheet) {
   await sheet.saveUpdatedCells();
 }
 
-// Aplicar color según estado
+// Aplicar color según estado (MEJORADO)
 async function aplicarColorEstado(sheet, rowIndex, estado) {
-  const colorConfig = ESTADOS_COLORES[estado] || ESTADOS_COLORES['Pendiente'];
-  
-  await sheet.loadCells(`A${rowIndex}:M${rowIndex}`);
-  
-  for (let i = 0; i < 13; i++) {
-    const cell = sheet.getCell(rowIndex - 1, i);
-    cell.backgroundColor = colorConfig.bg;
-    cell.textFormat = { foregroundColor: colorConfig.text };
+  try {
+    const colorConfig = ESTADOS_COLORES[estado] || ESTADOS_COLORES['Pendiente'];
+    
+    await sheet.loadCells(`A${rowIndex}:M${rowIndex}`);
+    
+    for (let i = 0; i < 13; i++) {
+      const cell = sheet.getCell(rowIndex - 1, i);
+      cell.backgroundColor = colorConfig.bg;
+      cell.textFormat = { foregroundColor: colorConfig.text };
+    }
+    
+    await sheet.saveUpdatedCells();
+    console.log(`🎨 Color aplicado en ${sheet.title}, fila ${rowIndex}: ${estado} ${colorConfig.emoji}`);
+  } catch (error) {
+    console.error(`❌ Error aplicando color en fila ${rowIndex}:`, error.message);
   }
-  
-  await sheet.saveUpdatedCells();
 }
 
-// Sincronizar estado cuando columna PAGADO cambia
+// Sincronizar estado cuando columna PAGADO cambia (MEJORADO)
 async function sincronizarColumnaPagado(numeroPedido, valorPagado, hojaOrigen) {
   try {
     const estaPagado = valorPagado === 'PAGADO';
@@ -310,7 +363,6 @@ async function sincronizarColumnaPagado(numeroPedido, valorPagado, hojaOrigen) {
 // Detectar cambios en columna PAGADO y sincronizar
 async function detectarCambiosPagado() {
   try {
-    // Verificar cambios en Hoja 2
     const sheetPrincipal = doc.sheetsByIndex[1];
     const rowsPrincipal = await sheetPrincipal.getRows();
     
@@ -324,14 +376,12 @@ async function detectarCambiosPagado() {
       const estaPagado = pagado === 'PAGADO';
       const estadoEsperado = estaPagado ? 'Completado' : (estadoActual === 'Completado' ? 'Review Pagada' : estadoActual);
       
-      // Si hay desincronización, corregir
       if ((estaPagado && estadoActual !== 'Completado') || (!estaPagado && estadoActual === 'Completado')) {
         console.log(`🔄 Cambio detectado en Hoja 2: ${numero} → PAGADO: ${pagado}`);
         await sincronizarColumnaPagado(numero, pagado || 'PENDIENTE', 'Hoja 2');
       }
     }
     
-    // Verificar cambios en hojas de vendedores
     for (const vendedor of VENDEDORES) {
       const hojaVendedor = doc.sheetsByTitle[vendedor];
       if (hojaVendedor) {
@@ -343,7 +393,6 @@ async function detectarCambiosPagado() {
           
           if (!numero) continue;
           
-          // Verificar si es diferente a Hoja 2
           const rowPrincipal = rowsPrincipal.find(r => r.get('NUMERO') === numero);
           if (rowPrincipal) {
             const pagadoPrincipal = rowPrincipal.get('PAGADO');
@@ -368,7 +417,7 @@ function iniciarSincronizacionPeriodica() {
   
   setInterval(async () => {
     await detectarCambiosPagado();
-  }, 30000); // 30 segundos
+  }, 30000);
 }
 
 // Limpiar estado del usuario
@@ -441,12 +490,45 @@ bot.onText(/\/start/, (msg) => {
   
   limpiarEstadoUsuario(chatId);
   
+  // Guardar o actualizar chat_id cuando el usuario inicia el bot
+  if (msg.from.username) {
+    cargarYActualizarChatId(msg.from.username, chatId);
+  }
+  
   if (esAdmin) {
     console.log('👑 Admin conectado:', chatId);
   }
   
   mostrarMenuPrincipal(chatId, esAdmin);
 });
+
+// Actualizar chat_id en cache cuando usuario usa el bot
+async function cargarYActualizarChatId(username, chatId) {
+  try {
+    const sheetRegistro = doc.sheetsByIndex[0];
+    const rows = await sheetRegistro.getRows();
+    
+    for (const row of rows) {
+      const usuario = row.get('USUARIO');
+      const paypal = row.get('PAYPAL');
+      
+      if (usuario && usuario.toLowerCase() === username.toLowerCase()) {
+        // Actualizar en Google Sheets
+        row.set('CHAT_ID', chatId.toString());
+        await row.save();
+        
+        // Actualizar en cache
+        if (paypal) {
+          userChatIds.set(paypal, chatId);
+          console.log(`✅ Chat ID actualizado para ${username}: ${chatId}`);
+        }
+        break;
+      }
+    }
+  } catch (error) {
+    console.error('Error actualizando chat_id:', error);
+  }
+}
 
 // Comando /cancelar
 bot.onText(/\/cancelar/, (msg) => {
@@ -511,8 +593,153 @@ bot.on('callback_query', async (query) => {
   } else if (data === 'menu_principal') {
     limpiarEstadoUsuario(chatId);
     mostrarMenuPrincipal(chatId, esAdmin);
+    
+  } else if (data.startsWith('confirmar_paypal_')) {
+    const paypal = data.replace('confirmar_paypal_', '');
+    await confirmarPedidoConPayPal(chatId, paypal);
+    
+  } else if (data === 'modificar_paypal') {
+    const state = userStates[chatId];
+    if (state) {
+      state.step = 'awaiting_nuevo_paypal';
+      bot.sendMessage(chatId, '💰 Envía tu nuevo PayPal:', {
+        reply_markup: getBotonesControl()
+      });
+    }
+    
+  } else if (data.startsWith('enviar_comprobante_')) {
+    const numeroPedido = data.replace('enviar_comprobante_', '');
+    userStates[chatId] = { 
+      step: 'awaiting_comprobante_pago',
+      numeroPedido: numeroPedido
+    };
+    establecerTimeout(chatId);
+    bot.sendMessage(chatId, '📸 *ENVIAR COMPROBANTE*\n\nEnvía la captura del pago realizado:', {
+      parse_mode: 'Markdown',
+      reply_markup: getBotonesControl()
+    });
+    
+  } else if (data.startsWith('no_comprobante_')) {
+    const numeroPedido = data.replace('no_comprobante_', '');
+    await finalizarPagoSinComprobante(chatId, numeroPedido);
   }
 });
+
+// Confirmar pedido con PayPal existente
+async function confirmarPedidoConPayPal(chatId, paypal) {
+  const state = userStates[chatId];
+  if (!state) return;
+  
+  try {
+    const sheetRegistro = doc.sheetsByIndex[0];
+    const rowsRegistro = await sheetRegistro.getRows();
+    const userRegistro = rowsRegistro.find(r => r.get('PAYPAL') === paypal);
+    const perfilAmz = userRegistro ? userRegistro.get('PERFIL') : 'N/A';
+    
+    const sheetPedidos = doc.sheetsByIndex[1];
+    const newRow = await sheetPedidos.addRow({
+      FECHA: new Date().toLocaleDateString('es-ES'),
+      ARTICULO: '',
+      IMAGEN: state.imagenUrl,
+      DESCRIPCION: '',
+      NUMERO: state.numeroPedido,
+      PAYPAL: paypal,
+      'PERFIL AMZ': perfilAmz,
+      REVIEW: '',
+      NICK: state.nick,
+      COMISION: '',
+      ESTADO: 'Pendiente',
+      VENDEDOR: '',
+      PAGADO: 'PENDIENTE'
+    });
+    
+    // Aplicar color blanco (Pendiente)
+    await aplicarColorEstado(sheetPedidos, newRow.rowNumber, 'Pendiente');
+    
+    try {
+      if (state.tipoImagen === 'photo' || state.tipoImagen === 'document') {
+        await bot.sendPhoto(chatId, state.fileId, {
+          caption: '✅ Imagen guardada correctamente',
+          reply_markup: removerTeclado()
+        });
+      }
+    } catch (error) {
+      console.log('Error al reenviar imagen (no crítico)');
+    }
+    
+    const resumen = `📦 *PEDIDO REGISTRADO*\n\n` +
+      `🔢 Número: ${state.numeroPedido}\n` +
+      `💰 PayPal: ${paypal}\n` +
+      `📸 Imagen: Guardada\n\n` +
+      `✅ Pedido guardado correctamente`;
+    
+    bot.sendMessage(chatId, resumen, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+      }
+    });
+    
+    limpiarEstadoUsuario(chatId);
+    
+  } catch (error) {
+    console.error('❌ Error al confirmar pedido:', error);
+    bot.sendMessage(chatId, '❌ Error al guardar el pedido.', {
+      reply_markup: getBotonesControl()
+    });
+  }
+}
+
+// Finalizar pago sin comprobante
+async function finalizarPagoSinComprobante(chatId, numeroPedido) {
+  try {
+    const sheet = doc.sheetsByIndex[1];
+    const rows = await sheet.getRows();
+    const row = rows.find(r => r.get('NUMERO') === numeroPedido);
+    
+    if (!row) {
+      bot.sendMessage(chatId, '❌ No se encontró el pedido.');
+      return;
+    }
+    
+    // Actualizar estado y PAGADO
+    row.set('ESTADO', 'Review Pagada');
+    row.set('PAGADO', 'PENDIENTE');
+    await row.save();
+    
+    // Aplicar color azul oscuro
+    await aplicarColorEstado(sheet, row.rowNumber, 'Review Pagada');
+    
+    // Sincronizar con hojas de vendedores
+    for (const vendedor of VENDEDORES) {
+      const hojaVendedor = doc.sheetsByTitle[vendedor];
+      if (hojaVendedor) {
+        const rowsVendedor = await hojaVendedor.getRows();
+        const rowVendedor = rowsVendedor.find(r => r.get('NUMERO') === numeroPedido);
+        
+        if (rowVendedor) {
+          rowVendedor.set('ESTADO', 'Review Pagada');
+          rowVendedor.set('PAGADO', 'PENDIENTE');
+          await rowVendedor.save();
+          await aplicarColorEstado(hojaVendedor, rowVendedor.rowNumber, 'Review Pagada');
+        }
+      }
+    }
+    
+    bot.sendMessage(chatId, `✅ Pedido *${numeroPedido}* marcado como pagado (sin comprobante).\n\n🔵 Cambió a color azul oscuro.`, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+      }
+    });
+    
+    limpiarEstadoUsuario(chatId);
+    
+  } catch (error) {
+    console.error('❌ Error finalizando pago:', error);
+    bot.sendMessage(chatId, '❌ Error al procesar el pago.');
+  }
+}
 
 // Mostrar reviews pendientes
 async function mostrarReviewsPendientes(chatId) {
@@ -607,7 +834,7 @@ async function marcarReviewEnviada(chatId, numeroPedido) {
       }
     }
     
-    bot.sendMessage(chatId, `✅ Review del pedido *${numeroPedido}* marcada como enviada al seller.\n\n🔵 Cambió a color azul celeste.`, {
+    bot.sendMessage(chatId, `✅ Review del pedido *${numeroPedido}* marcada como enviada al seller.\n\n💙 Cambió a color azul celeste.`, {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
@@ -697,8 +924,19 @@ bot.on('message', async (msg) => {
         USUARIO: msg.from.username || msg.from.first_name,
         PERFIL: state.perfilAmazon,
         PAYPAL: state.paypal,
-        INTERMEDIARIOS: intermediarios
+        INTERMEDIARIOS: intermediarios,
+        CHAT_ID: chatId.toString()
       });
+      
+      // Actualizar cache
+      registeredUsers.set(state.perfilAmazon.toLowerCase(), {
+        perfil: state.perfilAmazon,
+        paypal: state.paypal,
+        usuario: msg.from.username || msg.from.first_name
+      });
+      
+      // Guardar chat_id
+      userChatIds.set(state.paypal, chatId);
       
       bot.sendMessage(chatId, '✅ Registro completado correctamente.\n\nYa puedes hacer pedidos.', {
         reply_markup: {
@@ -745,75 +983,47 @@ bot.on('message', async (msg) => {
         state.imagenUrl = imagenUrl;
         state.fileId = fileId;
         state.tipoImagen = tipoImagen;
-        state.step = 'awaiting_paypal_pedido';
+        state.nick = msg.from.username || msg.from.first_name;
         
-        bot.sendMessage(chatId, `✅ Imagen recibida correctamente\n\n💰 Ahora envía tu PayPal:`, {
-          reply_markup: getBotonesControl()
+        // MEJORA 1: Buscar PayPal del usuario registrado
+        const sheetRegistro = doc.sheetsByIndex[0];
+        const rowsRegistro = await sheetRegistro.getRows();
+        const userRegistro = rowsRegistro.find(r => {
+          const usuario = r.get('USUARIO');
+          return usuario && usuario.toLowerCase() === state.nick.toLowerCase();
         });
+        
+        if (userRegistro && userRegistro.get('PAYPAL')) {
+          const paypalRegistrado = userRegistro.get('PAYPAL');
+          state.paypalSugerido = paypalRegistrado;
+          
+          bot.sendMessage(chatId, `✅ Imagen recibida correctamente\n\n💰 ¿Es este tu PayPal?\n\n*${paypalRegistrado}*`, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: '✅ Sí, es correcto', callback_data: `confirmar_paypal_${paypalRegistrado}` },
+                  { text: '✏️ Modificar', callback_data: 'modificar_paypal' }
+                ],
+                [{ text: '❌ Cancelar', callback_data: 'menu_principal' }]
+              ]
+            }
+          });
+        } else {
+          state.step = 'awaiting_paypal_pedido';
+          bot.sendMessage(chatId, `✅ Imagen recibida correctamente\n\n💰 Envía tu PayPal:`, {
+            reply_markup: getBotonesControl()
+          });
+        }
       } else {
         bot.sendMessage(chatId, '⚠️ Por favor envía una imagen válida.', {
           reply_markup: getBotonesControl()
         });
       }
       
-    } else if (state.step === 'awaiting_paypal_pedido') {
+    } else if (state.step === 'awaiting_nuevo_paypal' || state.step === 'awaiting_paypal_pedido') {
       const paypal = text;
-      
-      try {
-        const sheetRegistro = doc.sheetsByIndex[0];
-        const rowsRegistro = await sheetRegistro.getRows();
-        const userRegistro = rowsRegistro.find(r => r.get('PAYPAL') === paypal);
-        const perfilAmz = userRegistro ? userRegistro.get('PERFIL') : 'N/A';
-        
-        const sheetPedidos = doc.sheetsByIndex[1];
-        await sheetPedidos.addRow({
-          FECHA: new Date().toLocaleDateString('es-ES'),
-          ARTICULO: '',
-          IMAGEN: state.imagenUrl,
-          DESCRIPCION: '',
-          NUMERO: state.numeroPedido,
-          PAYPAL: paypal,
-          'PERFIL AMZ': perfilAmz,
-          REVIEW: '',
-          NICK: msg.from.username || msg.from.first_name,
-          COMISION: '',
-          ESTADO: 'Pendiente',
-          VENDEDOR: '',
-          PAGADO: 'PENDIENTE'
-        });
-        
-        try {
-          if (state.tipoImagen === 'photo' || state.tipoImagen === 'document') {
-            await bot.sendPhoto(chatId, state.fileId, {
-              caption: '✅ Imagen guardada correctamente',
-              reply_markup: removerTeclado()
-            });
-          }
-        } catch (error) {
-          console.log('Error al reenviar imagen (no crítico)');
-        }
-        
-        const resumen = `📦 *PEDIDO REGISTRADO*\n\n` +
-          `🔢 Número: ${state.numeroPedido}\n` +
-          `💰 PayPal: ${paypal}\n` +
-          `📸 Imagen: Guardada\n\n` +
-          `✅ Pedido guardado correctamente`;
-        
-        bot.sendMessage(chatId, resumen, {
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
-          }
-        });
-        
-        limpiarEstadoUsuario(chatId);
-        
-      } catch (error) {
-        console.error('❌ Error al guardar pedido:', error);
-        bot.sendMessage(chatId, '❌ Error al guardar el pedido.', {
-          reply_markup: getBotonesControl()
-        });
-      }
+      await confirmarPedidoConPayPal(chatId, paypal);
       
     // SUBIR REVIEW
     } else if (state.step === 'awaiting_review_link') {
@@ -865,7 +1075,7 @@ bot.on('message', async (msg) => {
       
       limpiarEstadoUsuario(chatId);
       
-    // MARCAR PAGADO (ADMIN)
+    // MARCAR PAGADO (ADMIN) - MEJORA 2
     } else if (state.step === 'awaiting_numero_pagar') {
       const numeroPedido = text;
       
@@ -874,40 +1084,143 @@ bot.on('message', async (msg) => {
       const row = rows.find(r => r.get('NUMERO') === numeroPedido);
       
       if (row) {
-        row.set('ESTADO', 'Review Pagada');
-        await row.save();
+        state.numeroPedido = numeroPedido;
+        state.paypalUsuario = row.get('PAYPAL');
+        state.nickUsuario = row.get('NICK');
         
-        await aplicarColorEstado(sheet, row.rowNumber, 'Review Pagada');
-        
-        // Sincronizar con hojas de vendedores
-        for (const vendedor of VENDEDORES) {
-          const hojaVendedor = doc.sheetsByTitle[vendedor];
-          if (hojaVendedor) {
-            const rowsVendedor = await hojaVendedor.getRows();
-            const rowVendedor = rowsVendedor.find(r => r.get('NUMERO') === numeroPedido);
-            
-            if (rowVendedor) {
-              rowVendedor.set('ESTADO', 'Review Pagada');
-              await rowVendedor.save();
-              await aplicarColorEstado(hojaVendedor, rowVendedor.rowNumber, 'Review Pagada');
-            }
-          }
-        }
-        
-        bot.sendMessage(chatId, `✅ Pedido *${numeroPedido}* marcado como pagado.\n\n🔵 Cambió a color azul oscuro.`, {
+        bot.sendMessage(chatId, `💰 *MARCAR COMO PAGADO*\n\nPedido: *${numeroPedido}*\nUsuario: ${state.nickUsuario}\nPayPal: ${state.paypalUsuario}\n\n¿Deseas enviar comprobante de pago?`, {
           parse_mode: 'Markdown',
           reply_markup: {
-            inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+            inline_keyboard: [
+              [
+                { text: '📸 Sí, enviar comprobante', callback_data: `enviar_comprobante_${numeroPedido}` }
+              ],
+              [
+                { text: '❌ No, solo marcar pagado', callback_data: `no_comprobante_${numeroPedido}` }
+              ],
+              [{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]
+            ]
           }
         });
-        
       } else {
         bot.sendMessage(chatId, '❌ No se encontró el pedido.', {
           reply_markup: getBotonesControl()
         });
+        limpiarEstadoUsuario(chatId);
       }
       
-      limpiarEstadoUsuario(chatId);
+    // COMPROBANTE DE PAGO
+    } else if (state.step === 'awaiting_comprobante_pago') {
+      let fileId = null;
+      let tipoArchivo = null;
+      
+      if (msg.photo) {
+        fileId = msg.photo[msg.photo.length - 1].file_id;
+        tipoArchivo = 'photo';
+      } else if (msg.document) {
+        fileId = msg.document.file_id;
+        tipoArchivo = 'document';
+      }
+      
+      if (fileId) {
+        try {
+          // Actualizar estado en Google Sheets
+          const sheet = doc.sheetsByIndex[1];
+          const rows = await sheet.getRows();
+          const row = rows.find(r => r.get('NUMERO') === state.numeroPedido);
+          
+          if (row) {
+            row.set('ESTADO', 'Review Pagada');
+            row.set('PAGADO', 'PENDIENTE');
+            await row.save();
+            
+            // Aplicar color azul oscuro
+            await aplicarColorEstado(sheet, row.rowNumber, 'Review Pagada');
+            
+            // Sincronizar con hojas de vendedores
+            for (const vendedor of VENDEDORES) {
+              const hojaVendedor = doc.sheetsByTitle[vendedor];
+              if (hojaVendedor) {
+                const rowsVendedor = await hojaVendedor.getRows();
+                const rowVendedor = rowsVendedor.find(r => r.get('NUMERO') === state.numeroPedido);
+                
+                if (rowVendedor) {
+                  rowVendedor.set('ESTADO', 'Review Pagada');
+                  rowVendedor.set('PAGADO', 'PENDIENTE');
+                  await rowVendedor.save();
+                  await aplicarColorEstado(hojaVendedor, rowVendedor.rowNumber, 'Review Pagada');
+                }
+              }
+            }
+            
+            // Buscar chat_id del usuario por su PayPal
+            const userChatId = userChatIds.get(state.paypalUsuario);
+            
+            if (userChatId) {
+              try {
+                // Enviar comprobante al usuario
+                const mensajeUsuario = `💰 *PEDIDO REEMBOLSADO*\n\n📦 Pedido: *${state.numeroPedido}*\n\n✅ Tu pago ha sido procesado.\n\nAquí está el comprobante:`;
+                
+                if (tipoArchivo === 'photo') {
+                  await bot.sendPhoto(userChatId, fileId, {
+                    caption: mensajeUsuario,
+                    parse_mode: 'Markdown'
+                  });
+                } else {
+                  await bot.sendDocument(userChatId, fileId, {
+                    caption: mensajeUsuario,
+                    parse_mode: 'Markdown'
+                  });
+                }
+                
+                bot.sendMessage(chatId, `✅ Pedido *${state.numeroPedido}* marcado como pagado.\n\n🔵 Cambió a color azul oscuro.\n\n📤 Comprobante enviado exitosamente a @${state.nickUsuario}`, {
+                  parse_mode: 'Markdown',
+                  reply_markup: {
+                    inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+                  }
+                });
+                
+              } catch (error) {
+                console.error('Error enviando al usuario:', error);
+                bot.sendMessage(chatId, `✅ Pedido marcado como pagado.\n\n⚠️ No se pudo enviar automáticamente a @${state.nickUsuario}\n\nReenvía manualmente el comprobante.`, {
+                  parse_mode: 'Markdown',
+                  reply_markup: {
+                    inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+                  }
+                });
+              }
+            } else {
+              // Si no hay chat_id guardado
+              if (tipoArchivo === 'photo') {
+                await bot.sendPhoto(chatId, fileId, {
+                  caption: `✅ Comprobante guardado.\n\n⚠️ Usuario no ha iniciado el bot.\nReenvía esta imagen manualmente a: @${state.nickUsuario}`
+                });
+              } else {
+                await bot.sendDocument(chatId, fileId, {
+                  caption: `✅ Comprobante guardado.\n\n⚠️ Usuario no ha iniciado el bot.\nReenvía este archivo manualmente a: @${state.nickUsuario}`
+                });
+              }
+              
+              bot.sendMessage(chatId, `✅ Pedido *${state.numeroPedido}* marcado como pagado.\n\n🔵 Cambió a color azul oscuro.`, {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                  inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+                }
+              });
+            }
+          }
+          
+          limpiarEstadoUsuario(chatId);
+          
+        } catch (error) {
+          console.error('❌ Error procesando comprobante:', error);
+          bot.sendMessage(chatId, '❌ Error al procesar el comprobante.');
+        }
+      } else {
+        bot.sendMessage(chatId, '⚠️ Por favor envía una imagen o documento válido.', {
+          reply_markup: getBotonesControl()
+        });
+      }
     }
     
   } catch (error) {
@@ -921,7 +1234,7 @@ bot.on('message', async (msg) => {
 
 // Servidor Express
 app.get('/', (req, res) => {
-  res.send('Bot AmazonFlow - Con desplegable PAGADO funcionando');
+  res.send('Bot AmazonFlow v2.0 - Mejorado con PayPal automático y comprobantes');
 });
 
 app.listen(PORT, () => {
