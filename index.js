@@ -58,7 +58,7 @@ const ESTADOS_COLORES = {
   },
   'Review Pagada': {
     bg: { red: 0.259, green: 0.522, blue: 0.957 },
-    text: { red: 1, green: 1, blue: 1 },
+    text: { red: 0, green: 0, blue: 0 },
     emoji: '🔵'
   },
   'Completado': {
@@ -360,7 +360,7 @@ async function sincronizarColumnaPagado(numeroPedido, valorPagado, hojaOrigen) {
   }
 }
 
-// Detectar cambios en columna PAGADO y sincronizar
+// Detectar cambios en columna PAGADO y colores amarillos
 async function detectarCambiosPagado() {
   try {
     const sheetPrincipal = doc.sheetsByIndex[1];
@@ -378,11 +378,11 @@ async function detectarCambiosPagado() {
       
       if ((estaPagado && estadoActual !== 'Completado') || (!estaPagado && estadoActual === 'Completado')) {
         console.log(`🔄 Cambio detectado en Hoja 2: ${numero} → PAGADO: ${pagado}`);
-        await sincronizarColumnaPagado(numero, pagado || 'PENDIENTE', 'Hoja 2');
+        await sincronizarColumnaPagado(numero, pagado || '', 'Hoja 2');
       }
     }
     
-    // Verificar cambios en hojas de vendedores Y sincronizar colores
+    // Verificar colores amarillos en hojas de vendedores
     for (const vendedor of VENDEDORES) {
       const hojaVendedor = doc.sheetsByTitle[vendedor];
       if (hojaVendedor) {
@@ -390,29 +390,33 @@ async function detectarCambiosPagado() {
         
         for (const rowVendedor of rowsVendedor) {
           const numero = rowVendedor.get('NUMERO');
-          const pagadoVendedor = rowVendedor.get('PAGADO');
-          const estadoVendedor = rowVendedor.get('ESTADO');
           
           if (!numero) continue;
           
-          const rowPrincipal = rowsPrincipal.find(r => r.get('NUMERO') === numero);
-          if (rowPrincipal) {
-            const pagadoPrincipal = rowPrincipal.get('PAGADO');
-            const estadoPrincipal = rowPrincipal.get('ESTADO');
-            
-            // Si PAGADO cambió en hoja vendedor, sincronizar a todas
-            if (pagadoVendedor !== pagadoPrincipal) {
-              console.log(`🔄 Cambio detectado en ${vendedor}: ${numero} → PAGADO: ${pagadoVendedor}`);
-              await sincronizarColumnaPagado(numero, pagadoVendedor || 'PENDIENTE', vendedor);
-            }
-            
-            // Si el estado es Completado en vendedor pero no en principal, copiar
-            if (estadoVendedor === 'Completado' && estadoPrincipal !== 'Completado') {
-              console.log(`🟡 Copiando Completado de ${vendedor} a Hoja 2: ${numero}`);
-              rowPrincipal.set('ESTADO', 'Completado');
-              rowPrincipal.set('PAGADO', 'PAGADO');
-              await rowPrincipal.save();
-              await aplicarColorEstado(sheetPrincipal, rowPrincipal.rowNumber, 'Completado');
+          // Cargar el color de la celda en la hoja vendedor
+          await hojaVendedor.loadCells(`A${rowVendedor.rowNumber}:A${rowVendedor.rowNumber}`);
+          const cell = hojaVendedor.getCell(rowVendedor.rowNumber - 1, 0);
+          const bgColor = cell.backgroundColor;
+          
+          // Detectar si es amarillo (aproximadamente)
+          const esAmarillo = bgColor && 
+                            bgColor.red > 0.9 && 
+                            bgColor.green > 0.9 && 
+                            bgColor.blue < 0.3;
+          
+          if (esAmarillo) {
+            const rowPrincipal = rowsPrincipal.find(r => r.get('NUMERO') === numero);
+            if (rowPrincipal) {
+              const estadoPrincipal = rowPrincipal.get('ESTADO');
+              
+              // Si no está en Completado, sincronizar
+              if (estadoPrincipal !== 'Completado') {
+                console.log(`🟡 Color amarillo detectado en ${vendedor}: ${numero} - Copiando a Hoja 2`);
+                rowPrincipal.set('ESTADO', 'Completado');
+                rowPrincipal.set('PAGADO', 'PAGADO');
+                await rowPrincipal.save();
+                await aplicarColorEstado(sheetPrincipal, rowPrincipal.rowNumber, 'Completado');
+              }
             }
           }
         }
@@ -420,7 +424,7 @@ async function detectarCambiosPagado() {
     }
     
   } catch (error) {
-    console.error('❌ Error detectando cambios en PAGADO:', error);
+    console.error('❌ Error detectando cambios:', error);
   }
 }
 
@@ -734,7 +738,6 @@ async function finalizarPagoSinComprobante(chatId, numeroPedido) {
     
     // Actualizar estado y PAGADO
     row.set('ESTADO', 'Review Pagada');
-    row.set('PAGADO', 'PENDIENTE');
     await row.save();
     
     // Aplicar color azul oscuro
@@ -749,7 +752,6 @@ async function finalizarPagoSinComprobante(chatId, numeroPedido) {
         
         if (rowVendedor) {
           rowVendedor.set('ESTADO', 'Review Pagada');
-          rowVendedor.set('PAGADO', 'PENDIENTE');
           await rowVendedor.save();
           await aplicarColorEstado(hojaVendedor, rowVendedor.rowNumber, 'Review Pagada');
         }
@@ -1213,7 +1215,6 @@ bot.on('message', async (msg) => {
           
           if (row) {
             row.set('ESTADO', 'Review Pagada');
-            row.set('PAGADO', 'PENDIENTE');
             await row.save();
             
             // Aplicar color azul oscuro
@@ -1228,7 +1229,6 @@ bot.on('message', async (msg) => {
                 
                 if (rowVendedor) {
                   rowVendedor.set('ESTADO', 'Review Pagada');
-                  rowVendedor.set('PAGADO', 'PENDIENTE');
                   await rowVendedor.save();
                   await aplicarColorEstado(hojaVendedor, rowVendedor.rowNumber, 'Review Pagada');
                 }
