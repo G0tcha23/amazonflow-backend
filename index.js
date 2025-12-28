@@ -1035,44 +1035,42 @@ bot.on('message', async (msg) => {
       
     } else if (state.step === 'awaiting_numero_review') {
       state.numeroPedido = text;
-      state.step = 'awaiting_paypal_review';
-      bot.sendMessage(chatId, '💰 Envía tu PayPal:', {
-        reply_markup: getBotonesControl()
+      
+      // MEJORA: Buscar PayPal automáticamente
+      const sheetRegistro = doc.sheetsByIndex[0];
+      const rowsRegistro = await sheetRegistro.getRows();
+      const nick = msg.from.username || msg.from.first_name;
+      const userRegistro = rowsRegistro.find(r => {
+        const usuario = r.get('USUARIO');
+        return usuario && usuario.toLowerCase() === nick.toLowerCase();
       });
       
-    } else if (state.step === 'awaiting_paypal_review') {
-      const paypal = text;
-      
-      const sheet = doc.sheetsByIndex[1];
-      const rows = await sheet.getRows();
-      const row = rows.find(r => r.get('NUMERO') === state.numeroPedido && r.get('PAYPAL') === paypal);
-      
-      if (row) {
-        row.set('REVIEW', state.reviewLink);
-        row.set('ESTADO', 'Review Subida');
-        await row.save();
+      if (userRegistro && userRegistro.get('PAYPAL')) {
+        const paypalRegistrado = userRegistro.get('PAYPAL');
+        state.paypalSugerido = paypalRegistrado;
         
-        await aplicarColorEstado(sheet, row.rowNumber, 'Review Subida');
-        
-        bot.sendMessage(chatId, '✅ Review subida correctamente.\n\nTu pedido está siendo procesado.', {
+        bot.sendMessage(chatId, `💰 ¿Es este tu PayPal?\n\n*${paypalRegistrado}*`, {
+          parse_mode: 'Markdown',
           reply_markup: {
-            inline_keyboard: [[{ text: '🏠 Menú Principal', callback_data: 'menu_principal' }]]
+            inline_keyboard: [
+              [
+                { text: '✅ Sí, es correcto', callback_data: `confirmar_paypal_review_${paypalRegistrado}` },
+                { text: '✏️ Modificar', callback_data: 'modificar_paypal_review' }
+              ],
+              [{ text: '❌ Cancelar', callback_data: 'menu_principal' }]
+            ]
           }
         });
-        
-        await notificarNuevaReview({
-          numero: state.numeroPedido,
-          review: state.reviewLink,
-          paypal: paypal,
-          nick: msg.from.username || msg.from.first_name
-        });
-        
       } else {
-        bot.sendMessage(chatId, '❌ No se encontró el pedido.', {
+        state.step = 'awaiting_paypal_review';
+        bot.sendMessage(chatId, '💰 Envía tu PayPal:', {
           reply_markup: getBotonesControl()
         });
       }
       
+    } else if (state.step === 'awaiting_paypal_review') {
+      const paypal = text;
+      await procesarReviewSubida(chatId, state.numeroPedido, state.reviewLink, paypal, msg.from.username || msg.from.first_name);
       limpiarEstadoUsuario(chatId);
       
     // MARCAR PAGADO (ADMIN) - MEJORA 2
