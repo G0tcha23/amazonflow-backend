@@ -167,19 +167,29 @@ async function añadirColumnaPagado(sheet) {
   }
 }
 
-// Formatear encabezados con estilo
+// Formatear encabezados con estilo (TEXTO NEGRO SIEMPRE)
 async function formatearEncabezados() {
-  const sheet = doc.sheetsByIndex[1];
-  await sheet.loadCells('A1:M1');
-  
-  for (let i = 0; i < 13; i++) {
-    const cell = sheet.getCell(0, i);
-    cell.textFormat = { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } };
-    cell.backgroundColor = { red: 0.1, green: 0.137, blue: 0.494 };
-    cell.horizontalAlignment = 'CENTER';
+  try {
+    const sheet = doc.sheetsByIndex[1];
+    await sheet.loadCells('A1:M1');
+    
+    for (let i = 0; i < 13; i++) {
+      const cell = sheet.getCell(0, i);
+      
+      // TEXTO NEGRO EN ENCABEZADOS TAMBIÉN
+      if (!cell.textFormat) cell.textFormat = {};
+      cell.textFormat.bold = true;
+      cell.textFormat.foregroundColor = { red: 0, green: 0, blue: 0 }; // NEGRO
+      
+      cell.backgroundColor = { red: 0.1, green: 0.137, blue: 0.494 }; // AZUL
+      cell.horizontalAlignment = 'CENTER';
+    }
+    
+    await sheet.saveUpdatedCells();
+    console.log('✅ Encabezados formateados: azul + TEXTO NEGRO');
+  } catch (error) {
+    console.error('❌ Error formateando encabezados:', error);
   }
-  
-  await sheet.saveUpdatedCells();
 }
 
 // Crear hojas automáticas por vendedor
@@ -206,18 +216,28 @@ async function crearHojasVendedores() {
   }
 }
 
-// Formatear encabezados de hojas de vendedores
+// Formatear encabezados de hojas de vendedores (TEXTO NEGRO SIEMPRE)
 async function formatearEncabezadosVendedor(sheet) {
-  await sheet.loadCells('A1:M1');
-  
-  for (let i = 0; i < 13; i++) {
-    const cell = sheet.getCell(0, i);
-    cell.textFormat = { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } };
-    cell.backgroundColor = { red: 0.1, green: 0.137, blue: 0.494 };
-    cell.horizontalAlignment = 'CENTER';
+  try {
+    await sheet.loadCells('A1:M1');
+    
+    for (let i = 0; i < 13; i++) {
+      const cell = sheet.getCell(0, i);
+      
+      // TEXTO NEGRO EN ENCABEZADOS TAMBIÉN
+      if (!cell.textFormat) cell.textFormat = {};
+      cell.textFormat.bold = true;
+      cell.textFormat.foregroundColor = { red: 0, green: 0, blue: 0 }; // NEGRO
+      
+      cell.backgroundColor = { red: 0.1, green: 0.137, blue: 0.494 }; // AZUL
+      cell.horizontalAlignment = 'CENTER';
+    }
+    
+    await sheet.saveUpdatedCells();
+    console.log(`✅ Encabezados formateados en ${sheet.title}: azul + TEXTO NEGRO`);
+  } catch (error) {
+    console.error('❌ Error formateando encabezados vendedor:', error);
   }
-  
-  await sheet.saveUpdatedCells();
 }
 
 // FUNCIÓN CRÍTICA: Aplicar color con texto SIEMPRE negro
