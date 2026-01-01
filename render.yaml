@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: amazonflow-backend
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
