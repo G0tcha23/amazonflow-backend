@@ -3,7 +3,15 @@ services:
     name: amazonflow-backend
     env: node
     buildCommand: npm install
-    startCommand: npm start
+    startCommand: node bot.js
     envVars:
       - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GOOGLE_CLIENT_EMAIL
+        sync: false
+      - key: GOOGLE_PRIVATE_KEY
+        sync: false
+      - key: GOOGLE_SHEET_ID
+        sync: false
+      - key: PORT
         sync: false
